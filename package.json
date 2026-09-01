@@ -2,7 +2,7 @@
   "name": "claude-hamster",
   "displayName": "Hamster",
   "description": "Rich sidebar for hamster tmux Claude sessions \u2014 state board, jump, snooze, notes, PR decoration; you direct attention, it never does.",
-  "version": "0.1.13",
+  "version": "0.1.14",
   "publisher": "davidtedmanjones",
   "private": true,
   "engines": {
@@ -137,6 +137,10 @@
       {
         "command": "hamster.addAllFolders",
         "title": "Hamster: Add All Session Folders to Workspace"
+      },
+      {
+        "command": "hamster.diagnose",
+        "title": "Hamster: Diagnostics"
       }
     ],
     "keybindings": [

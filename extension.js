@@ -1092,6 +1092,19 @@ function activate(context) {
     vscode.commands.registerCommand('hamster.prev', () => cmdPrev().then(() => provider.tick())),
     vscode.commands.registerCommand('hamster.jump', () => cmdJump().then(() => provider.tick())),
     vscode.commands.registerCommand('hamster.menu', () => cmdMenu(provider)),
+    vscode.commands.registerCommand('hamster.diagnose', async () => {
+      const bin = hamsterBin();
+      const r = await hamster(['json']);
+      let msg;
+      try {
+        const d = JSON.parse(r.stdout);
+        msg = 'ok=' + d.ok + ' windows=' + (d.windows || []).length
+          + ' counts=' + JSON.stringify(d.counts || {});
+      } catch (e) {
+        msg = 'json unparseable: ' + ((r.stderr || r.err && r.err.message || r.stdout || 'empty').slice(0, 140));
+      }
+      vscode.window.showInformationMessage('Hamster diag: bin=' + bin + ' · ' + msg, { modal: true });
+    }),
     vscode.commands.registerCommand('hamster.addAllFolders', async () => {
       const st = await getState();
       if (!st || !st.ok) { vscode.window.showWarningMessage('Hamster: board offline'); return; }
