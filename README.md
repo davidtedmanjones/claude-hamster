@@ -73,27 +73,43 @@ waiting session. That design lost, decisively.)
 
 ## Install
 
+Requirements: tmux, python3, [Claude Code](https://docs.anthropic.com/en/docs/claude-code).
+Optional: [gh](https://cli.github.com) for PR chips.
+
+**Just the extension** — grab `claude-hamster-<version>.vsix` from
+[releases](https://github.com/davidtedmanjones/claude-hamster/releases):
+
+```sh
+code --install-extension claude-hamster-0.1.0.vsix
+```
+
+Everything else is automatic: on first activation the extension installs its
+bundled core to `~/.claude/hamster/bin`, wires the Claude Code hooks, and sets
+up the F-key passthrough. Click the wheel icon in the activity bar — the
+hamster tab creates the tmux session on first use. Run **"Hamster: Install
+CLI"** from the command palette if you want the `hamster` command on your
+PATH (sessions use it to register artifacts). Extension updates re-sync the
+core; the hooks live at a stable path and never break.
+
+**Or from a checkout** (headless tmux board works without VS Code):
+
 ```sh
 git clone https://github.com/davidtedmanjones/claude-hamster
 cd claude-hamster && ./install.sh
 ```
 
 The installer is idempotent: symlinks `hamster` onto your PATH, wires the
-Claude Code hooks into `~/.claude/settings.json`, symlinks the VS Code
-extension, and adds the F-key passthrough to VS Code's terminal settings
-(everything backed up first). Then:
+Claude Code hooks, symlinks the extension, adds the F-key passthrough —
+everything backed up first. The extension detects a checkout install and
+adopts it rather than re-wiring.
+
+Either way, after install:
 
 ```sh
-hamster start          # create/attach the tmux session
+hamster start          # create/attach the tmux session (the sidebar does this too)
 hamster new ~/proj     # launch a Claude session on the board
 hamster adopt <sid>    # or pull in an existing session by id
 ```
-
-Reload the VS Code window and click the wheel icon in the activity bar.
-
-Requirements: tmux, python3, [Claude Code](https://docs.anthropic.com/en/docs/claude-code).
-Optional: [gh](https://cli.github.com) for PR chips; VS Code for the sidebar
-(the tmux board works headless without it).
 
 ## Companion: claude-resurrect
 

@@ -17,7 +17,125 @@ function cfg() { return vscode.workspace.getConfiguration('hamster'); }
 function expandHome(p) {
   return p && p.startsWith('~') ? path.join(os.homedir(), p.slice(1)) : p;
 }
-function hamsterBin() { return expandHome(cfg().get('path') || '~/.local/bin/hamster'); }
+const STABLE = path.join(HDIR, 'bin');
+let resolvedBin = null;   // set by ensureSetup at activation
+function hamsterBin() {
+  const p = cfg().get('path');
+  if (p) return expandHome(p);
+  return resolvedBin || path.join(STABLE, 'hamster');
+}
+
+// ── first-run bootstrap ──────────────────────────────────────────────────
+// Hooks must survive extension updates (versioned install paths), so the
+// bundled core is synced to a STABLE location and hooks point there. A
+// git-clone install (hooks already pointing at a live checkout) is adopted
+// as-is — never rewired out from under the user.
+const CORE_FILES = ['hamster', 'wheelstate.py', 'pick.py', 'enrich.py',
+  'backfill_facts.py', 'backfill_artifacts.py', 'facts-hook.sh', 'hamster.tmux.conf'];
+const SKIP_CMDS = ['hamster.jump', 'hamster.menu', 'hamster.snoozeActive',
+  'hamster.renameActive', 'hamster.hidesnooze', 'hamster.new',
+  'hamster.stepPrev', 'hamster.stepNext', 'hamster.prev', 'hamster.attach'];
+
+function findHookBin(sj) {
+  for (const e of ((sj.hooks || {}).Stop || [])) {
+    for (const k of (e.hooks || [])) {
+      const m = /^(.*\/hamster) stop-hook$/.exec(k.command || '');
+      if (m && fs.existsSync(m[1])) return m[1];
+    }
+  }
+  return null;
+}
+
+function syncCore(src, version) {
+  const stamp = path.join(STABLE, '.version');
+  const fresh = fs.existsSync(stamp) && fs.readFileSync(stamp, 'utf8') === version
+    && CORE_FILES.every(f => fs.existsSync(path.join(STABLE, f)));
+  if (fresh) return;
+  fs.mkdirSync(STABLE, { recursive: true });
+  for (const f of CORE_FILES) fs.copyFileSync(path.join(src, f), path.join(STABLE, f));
+  for (const f of ['hamster', 'facts-hook.sh']) fs.chmodSync(path.join(STABLE, f), 0o755);
+  fs.writeFileSync(stamp, version);
+}
+
+function writeHooks(sj, settingsPath) {
+  const ham = path.join(STABLE, 'hamster');
+  const facts = path.join(STABLE, 'facts-hook.sh');
+  const wanted = [
+    ['UserPromptSubmit', null, ham + ' submit-hook'],
+    ['Stop', null, ham + ' stop-hook'],
+    ['Notification', null, ham + ' notify-hook'],
+    ['SubagentStart', null, ham + ' subagent 1'],
+    ['SubagentStop', null, ham + ' subagent -1'],
+    ['PostToolUse', 'Bash', facts],
+    ['PostToolUse', 'Artifact', facts],
+  ];
+  const hooks = sj.hooks = sj.hooks || {};
+  for (const [ev, matcher, cmd] of wanted) {
+    let entries = hooks[ev] = hooks[ev] || [];
+    for (const e of entries) {   // strip broken wirings from old paths
+      e.hooks = (e.hooks || []).filter(k => {
+        const c = k.command || '';
+        const ours = /\/(hamster( |$)|facts-hook\.sh)/.test(c);
+        return !ours || c.startsWith(STABLE) || fs.existsSync(c.split(' ')[0]);
+      });
+    }
+    hooks[ev] = entries = entries.filter(e => (e.hooks || []).length);
+    const hit = entries.some(e => (matcher == null || e.matcher === matcher)
+      && (e.hooks || []).some(k => k.command === cmd));
+    if (!hit) {
+      const e = { hooks: [{ type: 'command', command: cmd, timeout: 10 }] };
+      if (matcher) e.matcher = matcher;
+      entries.push(e);
+    }
+  }
+  fs.writeFileSync(settingsPath + '.bak-claude-hamster', JSON.stringify(sj, null, 2));
+  fs.writeFileSync(settingsPath, JSON.stringify(sj, null, 2));
+}
+
+async function ensureSkipShell() {
+  const conf = vscode.workspace.getConfiguration();
+  const key = 'terminal.integrated.commandsToSkipShell';
+  const cur = (conf.inspect(key) || {}).globalValue || [];
+  const merged = cur.concat(SKIP_CMDS.filter(x => !cur.includes(x)));
+  if (merged.length !== cur.length) {
+    await conf.update(key, merged, vscode.ConfigurationTarget.Global);
+  }
+}
+
+async function ensureSetup(context) {
+  try {
+    await ensureSkipShell();
+    const settingsPath = path.join(os.homedir(), '.claude', 'settings.json');
+    let sj = {};
+    try { sj = JSON.parse(fs.readFileSync(settingsPath, 'utf8')); } catch (e) { /* fresh */ }
+    const hookBin = findHookBin(sj);
+    if (hookBin) { resolvedBin = hookBin; return; }   // existing install adopted
+    syncCore(path.join(context.extensionPath, 'core'),
+      (context.extension && context.extension.packageJSON.version) || '0');
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+    writeHooks(sj, settingsPath);
+    resolvedBin = path.join(STABLE, 'hamster');
+    vscode.window.showInformationMessage(
+      'Hamster: Claude Code hooks wired; core installed to ~/.claude/hamster/bin. '
+      + 'Run "Hamster: Install CLI" to get `hamster` on your PATH (optional).');
+  } catch (e) {
+    console.error('hamster bootstrap failed', e);
+  }
+}
+
+function installCli() {
+  const bin = hamsterBin();
+  const dst = path.join(os.homedir(), '.local', 'bin', 'hamster');
+  try {
+    fs.mkdirSync(path.dirname(dst), { recursive: true });
+    try { fs.unlinkSync(dst); } catch (e) { /* absent */ }
+    fs.symlinkSync(bin, dst);
+    vscode.window.showInformationMessage('Hamster: linked ' + dst + ' → ' + bin
+      + ' (ensure ~/.local/bin is on your PATH)');
+  } catch (e) {
+    vscode.window.showErrorMessage('Hamster: could not link CLI — ' + e.message);
+  }
+}
 // GUI-launched VS Code has a bare PATH; hamster needs tmux/claude/python3/gh
 function env(extra) {
   const add = [path.join(os.homedir(), '.local', 'bin'), '/opt/homebrew/bin', '/usr/local/bin'];
@@ -53,7 +171,7 @@ function wheelTerminal(startIfMissing) {
   const loc = (cfg().get('terminalLocation') || 'editor') === 'panel'
     ? vscode.TerminalLocation.Panel : vscode.TerminalLocation.Editor;
   const t = vscode.window.createTerminal({ name, location: loc });
-  t.sendText('hamster start');
+  t.sendText('"' + hamsterBin() + '" start');   // absolute — PATH may lack the CLI
   t.show(false);
   ownWheelTerminal = t;
   return t;
@@ -725,6 +843,9 @@ function activate(context) {
   const provider = new WheelProvider();
   const notes = new NotesProvider();
   provider.notes = notes;
+  ensureSetup(context);
+  context.subscriptions.push(
+    vscode.commands.registerCommand('hamster.installCli', installCli));
   const onActive = (cmd) => async () => {
     const a = await activeSession();
     if (!a) { vscode.window.showWarningMessage('Hamster: no active session'); return; }

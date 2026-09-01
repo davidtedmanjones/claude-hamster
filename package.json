@@ -83,6 +83,10 @@
       {
         "command": "hamster.stepNext",
         "title": "Hamster: Next Window"
+      },
+      {
+        "command": "hamster.installCli",
+        "title": "Hamster: Install CLI (hamster on PATH)"
       }
     ],
     "keybindings": [
@@ -143,8 +147,8 @@
       "properties": {
         "hamster.path": {
           "type": "string",
-          "default": "~/.local/bin/hamster",
-          "description": "Path to the hamster script."
+          "default": "",
+          "description": "Path to the hamster script. Empty = automatic: existing Claude-hook wiring if present (e.g. a git-clone install), else the bundled core synced to ~/.claude/hamster/bin."
         },
         "hamster.terminalName": {
           "type": "string",

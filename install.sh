@@ -17,7 +17,7 @@ need claude "https://docs.anthropic.com/en/docs/claude-code"
 
 # 1. PATH
 mkdir -p "$HOME/.local/bin"
-ln -sfn "$HERE/hamster" "$HOME/.local/bin/hamster"
+ln -sfn "$HERE/core/hamster" "$HOME/.local/bin/hamster"
 say "✓ hamster -> ~/.local/bin/hamster (make sure ~/.local/bin is on your PATH)"
 
 # 2. Claude Code hooks
@@ -32,8 +32,8 @@ except Exception:
 else:
     open(p + ".bak-claude-hamster", "w").write(json.dumps(d, indent=2))
 h = d.setdefault("hooks", {})
-ham = os.path.join(here, "hamster")
-facts = os.path.join(here, "facts-hook.sh")
+ham = os.path.join(here, "core", "hamster")
+facts = os.path.join(here, "core", "facts-hook.sh")
 WANTED = [
     ("UserPromptSubmit", None, ham + " submit-hook"),
     ("Stop", None, ham + " stop-hook"),
@@ -43,17 +43,18 @@ WANTED = [
     ("PostToolUse", "Bash", facts),
     ("PostToolUse", "Artifact", facts),
 ]
-def strip_stale(entries, needle):
-    """drop hooks pointing at an old checkout of this project"""
+def strip_stale(entries, needle, cmd):
+    """this installer owns hamster wiring: within the event, any hamster-ish
+    hook that isn't exactly the wanted command is a stale prior install"""
     for e in entries:
         e["hooks"] = [k for k in e.get("hooks", [])
                       if not (needle in k.get("command", "")
-                              and not k["command"].startswith(here))]
+                              and k["command"] != cmd)]
     return [e for e in entries if e.get("hooks")]
 for ev, matcher, cmd in WANTED:
     entries = h.setdefault(ev, [])
     tail = cmd.split("/")[-1].split(" ")[0]   # hamster / facts-hook.sh
-    h[ev] = entries = strip_stale(entries, "/" + tail)
+    h[ev] = entries = strip_stale(entries, "/" + tail, cmd)
     hit = any(any(k.get("command") == cmd for k in e.get("hooks", []))
               and (matcher is None or e.get("matcher") == matcher)
               for e in entries)
@@ -69,7 +70,7 @@ PY
 # 3. VS Code extension (skip silently if VS Code isn't set up)
 if [ -d "$HOME/.vscode" ]; then
   mkdir -p "$HOME/.vscode/extensions"
-  ln -sfn "$HERE/vscode" "$HOME/.vscode/extensions/claude-hamster"
+  ln -sfn "$HERE" "$HOME/.vscode/extensions/claude-hamster"
   say "✓ VS Code extension -> ~/.vscode/extensions/claude-hamster (reload the window)"
 else
   say "· ~/.vscode not found — skipped the extension (re-run after installing VS Code)"
