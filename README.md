@@ -80,7 +80,7 @@ Optional: [gh](https://cli.github.com) for PR chips.
 [releases](https://github.com/davidtedmanjones/claude-hamster/releases):
 
 ```sh
-code --install-extension claude-hamster-0.1.0.vsix
+code --install-extension claude-hamster-<version>.vsix
 ```
 
 Everything else is automatic: on first activation the extension installs its

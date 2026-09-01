@@ -51,7 +51,7 @@ def scan(tp):
                 if (isinstance(c, dict) and c.get("type") == "tool_result"
                         and c.get("tool_use_id") in pending):
                     ts = d.get("timestamp") or (
-                        datetime.datetime.utcnow().isoformat() + "Z")
+                        datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None).isoformat() + "Z")
                     for u in ART_RE.findall(flatten(c.get("content"))):
                         found.setdefault(u, (pending[c["tool_use_id"]], ts))
     return found

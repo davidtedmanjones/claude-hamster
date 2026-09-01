@@ -48,7 +48,7 @@ def main():
         if re.fullmatch(r"[0-9a-f]{8}", b):   # detached head
             continue
         if root:
-            pairs[b] = root
+            pairs[(root, b)] = root
 
     cp = os.path.join(hdir, "pr-cache.json")
     try:
@@ -58,10 +58,10 @@ def main():
     old_branches = cache.get("branches",
                              cache if "urls" not in cache else {})
     old_urls = cache.get("urls", {})
-    now = datetime.datetime.utcnow().isoformat() + "Z"
+    now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None).isoformat() + "Z"
 
     branches = {}
-    for b, root in sorted(pairs.items()):
+    for (root, b), _ in sorted(pairs.items()):
         try:
             r = subprocess.run(
                 ["gh", "pr", "list", "--head", b, "--state", "all",
@@ -70,18 +70,20 @@ def main():
             rows = json.loads(r.stdout or "[]") if r.returncode == 0 else None
         except Exception:
             rows = None
+        key = root + "::" + b
         if rows is None:   # gh unavailable/errored: keep the stale entry
-            if b in old_branches:
-                branches[b] = old_branches[b]
+            old = old_branches.get(key) or old_branches.get(b)
+            if old:
+                branches[key] = old
             continue
         if rows:
             p = rows[0]
-            branches[b] = {"number": p.get("number"), "url": p.get("url"),
+            branches[key] = {"number": p.get("number"), "url": p.get("url"),
                            "state": (p.get("state") or "").lower(),
                            "title": p.get("title") or "",
                            "branch": p.get("headRefName") or b, "at": now}
         else:   # negative result recorded so wheelstate doesn't guess
-            branches[b] = {"number": None, "at": now}
+            branches[key] = {"number": None, "at": now}
 
     urls = {}
     for u in sorted(fact_urls):

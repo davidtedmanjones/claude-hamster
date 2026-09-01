@@ -25,12 +25,20 @@ python3 - "$HERE" <<'PY'
 import json, os, sys
 here = sys.argv[1]
 p = os.path.expanduser("~/.claude/settings.json")
+d = {}
+raw = None
 try:
-    d = json.load(open(p))
+    raw = open(p).read()
 except Exception:
-    d = {}
-else:
-    open(p + ".bak-claude-hamster", "w").write(json.dumps(d, indent=2))
+    pass
+if raw is not None:
+    try:
+        d = json.loads(raw)
+    except Exception:
+        print("! %s exists but is not valid JSON — not touching it." % p)
+        print("  Fix it, then re-run this installer to wire the hooks.")
+        raise SystemExit(0)
+    open(p + ".bak-claude-hamster", "w").write(raw)
 h = d.setdefault("hooks", {})
 ham = os.path.join(here, "core", "hamster")
 facts = os.path.join(here, "core", "facts-hook.sh")
@@ -68,20 +76,25 @@ print("✓ Claude Code hooks wired (~/.claude/settings.json)")
 PY
 
 # 3. VS Code extension (skip silently if VS Code isn't set up)
-if [ -d "$HOME/.vscode" ]; then
-  mkdir -p "$HOME/.vscode/extensions"
-  ln -sfn "$HERE" "$HOME/.vscode/extensions/claude-hamster"
-  say "✓ VS Code extension -> ~/.vscode/extensions/claude-hamster (reload the window)"
-else
-  say "· ~/.vscode not found — skipped the extension (re-run after installing VS Code)"
-fi
+linked=""
+for extdir in "$HOME/.vscode/extensions" "$HOME/.vscode-insiders/extensions"; do
+  if [ -d "$(dirname "$extdir")" ]; then
+    mkdir -p "$extdir"
+    ln -sfn "$HERE" "$extdir/claude-hamster"
+    say "✓ VS Code extension -> $extdir/claude-hamster (reload the window)"
+    linked=1
+  fi
+done
+[ -z "$linked" ] && say "· no ~/.vscode found — skipped the extension (re-run after installing VS Code)"
 
 # 4. VS Code terminal key passthrough (F-keys reach hamster, not the shell)
 python3 - <<'PY'
 import json, os, sys
 cands = [
-    "~/Library/Application Support/Code/User/settings.json",   # macOS
-    "~/.config/Code/User/settings.json",                       # linux
+    "~/Library/Application Support/Code/User/settings.json",             # macOS
+    "~/Library/Application Support/Code - Insiders/User/settings.json",
+    "~/.config/Code/User/settings.json",                                 # linux
+    "~/.config/Code - Insiders/User/settings.json",
 ]
 cmds = ["hamster.jump", "hamster.menu", "hamster.snoozeActive",
         "hamster.renameActive", "hamster.hidesnooze", "hamster.new",

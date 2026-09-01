@@ -19,6 +19,7 @@ function expandHome(p) {
 }
 const STABLE = path.join(HDIR, 'bin');
 let resolvedBin = null;   // set by ensureSetup at activation
+let setupDone = Promise.resolve();   // replaced in activate; awaited before any exec
 function hamsterBin() {
   const p = cfg().get('path');
   if (p) return expandHome(p);
@@ -31,7 +32,8 @@ function hamsterBin() {
 // git-clone install (hooks already pointing at a live checkout) is adopted
 // as-is — never rewired out from under the user.
 const CORE_FILES = ['hamster', 'wheelstate.py', 'pick.py', 'enrich.py',
-  'backfill_facts.py', 'backfill_artifacts.py', 'facts-hook.sh', 'hamster.tmux.conf'];
+  'backfill_facts.py', 'backfill_artifacts.py', 'facts-hook.sh', 'facts_hook.py',
+  'hamster.tmux.conf'];
 const SKIP_CMDS = ['hamster.jump', 'hamster.menu', 'hamster.snoozeActive',
   'hamster.renameActive', 'hamster.hidesnooze', 'hamster.new',
   'hamster.stepPrev', 'hamster.stepNext', 'hamster.prev', 'hamster.attach'];
@@ -65,7 +67,7 @@ async function syncCore(src, version) {
   await fs.promises.writeFile(stamp, version);
 }
 
-async function writeHooks(sj, settingsPath) {
+async function writeHooks(sj, settingsPath, raw) {
   const ham = path.join(STABLE, 'hamster');
   const facts = path.join(STABLE, 'facts-hook.sh');
   const wanted = [
@@ -98,7 +100,9 @@ async function writeHooks(sj, settingsPath) {
       entries.push(e);
     }
   }
-  await fs.promises.writeFile(settingsPath + '.bak-claude-hamster', JSON.stringify(sj, null, 2));
+  if (raw !== null) {
+    await fs.promises.writeFile(settingsPath + '.bak-claude-hamster', raw);
+  }
   await fs.promises.writeFile(settingsPath, JSON.stringify(sj, null, 2));
 }
 
@@ -117,13 +121,29 @@ async function ensureSetup(context) {
     await ensureSkipShell();
     const settingsPath = path.join(os.homedir(), '.claude', 'settings.json');
     let sj = {};
-    try { sj = JSON.parse(await fs.promises.readFile(settingsPath, 'utf8')); } catch (e) { /* fresh */ }
+    let raw = null;
+    try { raw = await fs.promises.readFile(settingsPath, 'utf8'); } catch (e) { /* fresh */ }
+    if (raw !== null) {
+      try { sj = JSON.parse(raw); } catch (e) {
+        vscode.window.showWarningMessage(
+          'Hamster: ~/.claude/settings.json exists but is not valid JSON — '
+          + 'not touching it. Fix it (or run install.sh) and reload to wire the hooks.');
+        return;
+      }
+    }
     const hookBin = await findHookBin(sj);
-    if (hookBin) { resolvedBin = hookBin; return; }   // existing install adopted
+    if (hookBin) {
+      resolvedBin = hookBin;
+      if (hookBin.startsWith(STABLE)) {   // our managed copy: keep it current
+        await syncCore(path.join(context.extensionPath, 'core'),
+          (context.extension && context.extension.packageJSON.version) || '0');
+      }
+      return;   // existing install adopted
+    }
     await syncCore(path.join(context.extensionPath, 'core'),
       (context.extension && context.extension.packageJSON.version) || '0');
     await fs.promises.mkdir(path.dirname(settingsPath), { recursive: true });
-    await writeHooks(sj, settingsPath);
+    await writeHooks(sj, settingsPath, raw);
     resolvedBin = path.join(STABLE, 'hamster');
     vscode.window.showInformationMessage(
       'Hamster: Claude Code hooks wired; core installed to ~/.claude/hamster/bin. '
@@ -134,6 +154,7 @@ async function ensureSetup(context) {
 }
 
 async function installCli() {
+  await setupDone;
   const bin = hamsterBin();
   const dst = path.join(os.homedir(), '.local', 'bin', 'hamster');
   try {
@@ -159,7 +180,10 @@ function exec(bin, args, extraEnv, timeoutMs) {
       (err, stdout, stderr) => resolve({ err, stdout: stdout || '', stderr: stderr || '' }));
   });
 }
-const hamster = (args, extraEnv, timeoutMs) => exec(hamsterBin(), args, extraEnv, timeoutMs);
+const hamster = async (args, extraEnv, timeoutMs) => {
+  await setupDone;   // bootstrap must resolve the binary before first exec
+  return exec(hamsterBin(), args, extraEnv, timeoutMs);
+};
 const tmux = (args) => exec('tmux', args);
 
 let ownWheelTerminal = null;
@@ -222,21 +246,24 @@ async function cmdJump() {
 // Per-session free-text notes, keyed by sid (survives restarts/reorders),
 // stored as ~/.claude/hamster/notes/<sid>.md. Follows the active session.
 class NotesProvider {
-  constructor() { this.view = null; this.curSid = null; }
+  constructor() { this.view = null; this.curSid = null; this.saving = Promise.resolve(); }
 
   resolveWebviewView(view) {
     this.view = view;
     view.webview.options = { enableScripts: true };
     view.webview.html = notesHtml();
-    view.webview.onDidReceiveMessage(async m => {
-      if (m.cmd === 'save' && m.sid) {
+    view.webview.onDidReceiveMessage(m => {
+      if (m.cmd !== 'save' || !m.sid) return;
+      // serialized: update() awaits this chain before reading, so a rapid
+      // A→B→A switch can't read A's file ahead of A's in-flight save
+      this.saving = this.saving.then(async () => {
         try {
           await fs.promises.mkdir(NOTES, { recursive: true });
           await fs.promises.writeFile(path.join(NOTES, m.sid + '.md'), m.text || '');
         } catch (e) {
           vscode.window.showErrorMessage('Hamster notes: ' + e.message);
         }
-      }
+      });
     });
     view.onDidDispose(() => { this.view = null; this.curSid = null; });
     this.curSid = null;   // force a load on next update
@@ -258,6 +285,7 @@ class NotesProvider {
     }
     let text = '';
     if (sid) {
+      await this.saving;   // any in-flight save for this sid lands first
       try { text = await fs.promises.readFile(path.join(NOTES, sid + '.md'), 'utf8'); }
       catch (e) { text = ''; }
     }
@@ -268,7 +296,9 @@ class NotesProvider {
 
 function notesHtml() {
   return /* html */ `<!DOCTYPE html>
-<html><head><meta charset="utf-8"><style>
+<html><head><meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline';">
+<style>
   html, body { height: 100%; }
   body { margin: 0; display: flex; flex-direction: column; font-family: var(--vscode-font-family); }
   #who { flex: none; padding: 3px 8px; font-size: 10px; opacity: .6; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -312,7 +342,7 @@ class WheelProvider {
       vscode.window.showErrorMessage('Hamster: ' + (e && e.message || e));
     }));
     view.onDidChangeVisibility(() => view.visible ? this.startPoll() : this.stopPoll());
-    view.onDidDispose(() => this.stopPoll());
+    view.onDidDispose(() => { this.stopPoll(); this.view = null; });
     this.startPoll();
   }
 
@@ -321,8 +351,13 @@ class WheelProvider {
     const ms = Math.max(Number(cfg().get('pollMs')) || 1500, 500);
     this.tick();
     this.timer = setInterval(() => this.tick(), ms);
-    hamster(['enrich']);   // PR backfill: slow gh rail, fire-and-forget
-    this.enrichTimer = setInterval(() => hamster(['enrich']), 5 * 60 * 1000);
+    const enrich = () => {
+      if (Date.now() - (this.lastEnrich || 0) < 4 * 60 * 1000) return;
+      this.lastEnrich = Date.now();
+      hamster(['enrich']);   // PR backfill: slow gh rail, fire-and-forget
+    };
+    enrich();
+    this.enrichTimer = setInterval(enrich, 5 * 60 * 1000);
   }
   stopPoll() {
     if (this.timer) clearInterval(this.timer);
@@ -494,7 +529,9 @@ class WheelProvider {
 
 function html() {
   return /* html */ `<!DOCTYPE html>
-<html><head><meta charset="utf-8"><style>
+<html><head><meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline';">
+<style>
   body { padding: 0; margin: 0; font-family: var(--vscode-font-family); color: var(--vscode-foreground); font-size: 12px; }
   #hdr { position: sticky; top: 0; background: var(--vscode-sideBar-background); padding: 6px 8px; border-bottom: 1px solid var(--vscode-sideBarSectionHeader-border, rgba(128,128,128,.2)); z-index: 2; }
   #counts { opacity: .85; }
@@ -643,8 +680,10 @@ function html() {
     el.querySelector('.pinstar').hidden = !w.pin;
     const tks = w.tickets || [];
     const tkHead = tks.slice(0, 3);
+    const tkPfx = tkHead.length ? tkHead[0].replace(/\d+$/, '') : '';
     const tkTxt = tkHead.length
-      ? tkHead[0] + tkHead.slice(1).map(x => '·' + x.replace(/^APG-/, '')).join('')
+      ? tkHead[0] + tkHead.slice(1).map(x =>
+          '·' + (tkPfx && x.startsWith(tkPfx) ? x.slice(tkPfx.length) : x)).join('')
         + (tks.length > 3 ? '+' + (tks.length - 3) : '')
       : '';
     const tkEl = el.querySelector('.ticket');
@@ -668,7 +707,7 @@ function html() {
     const prChip = (p, full) =>
       '<span class="pr" data-url="' + esc(p.url || '') + '" title="'
       + esc((p.title ? p.title + ' — ' : '') + (p.url || 'PR')) + '">#'
-      + p.number + (p.state ? ' ' + esc(p.state) : '')
+      + esc(String(p.number)) + (p.state ? ' ' + esc(p.state) : '')
       + (full && p.branch ? ' ⎇ ' + esc(p.branch) : '') + '</span>';
     const dirChip = (w.base || w.branch)
       ? '<span class="c dirchip" data-p="' + esc(w.cwd || '') + '" title="'
@@ -853,7 +892,7 @@ function activate(context) {
   const provider = new WheelProvider();
   const notes = new NotesProvider();
   provider.notes = notes;
-  ensureSetup(context);
+  setupDone = ensureSetup(context);
   context.subscriptions.push(
     vscode.commands.registerCommand('hamster.installCli', installCli));
   const onActive = (cmd) => async () => {

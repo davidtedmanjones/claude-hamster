@@ -18,7 +18,8 @@ _now = datetime.datetime.utcnow
 
 def _parse(t):
     try:
-        return datetime.datetime.fromisoformat((t or "").replace("Z", ""))
+        dt = datetime.datetime.fromisoformat((t or "").replace("Z", ""))
+        return dt.replace(tzinfo=None)   # naive-UTC arithmetic downstream
     except Exception:
         return None
 

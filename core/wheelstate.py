@@ -191,7 +191,7 @@ def main():
     hdir = sys.argv[1]
     proj = sys.argv[2]
     ts = sys.argv[3] if len(sys.argv) > 3 else "hamster"
-    now = datetime.datetime.utcnow()
+    now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
     nowts = time.time()
 
     live = []
@@ -224,9 +224,10 @@ def main():
                              prcache if "urls" not in prcache else {})
     url_prs = prcache.get("urls", {})
 
-    def prs_for(sid, branch):
-        """All of this session's PRs: current branch's PR (enrich cache)
-        first, then every PR the session itself created (facts hook —
+    def prs_for(sid, branch, root):
+        """All of this session's PRs: current branch's PR (enrich cache,
+        keyed repo::branch so same-named branches in different repos never
+        cross) first, then every PR the session itself created (facts hook —
         gh pr create output only, so passing mentions never land here),
         oldest first. States/titles backfilled from the url cache."""
         out = []
@@ -239,7 +240,7 @@ def main():
             out.append({"number": number, "url": url, "state": state,
                         "title": title, "branch": head})
 
-        c = branch_prs.get(branch)
+        c = branch_prs.get(root + "::" + branch) or branch_prs.get(branch)
         if c and c.get("number"):
             add(c["number"], c.get("url", ""), c.get("state", ""),
                 c.get("title", ""), c.get("branch", branch))
@@ -247,14 +248,17 @@ def main():
             try:
                 fx = json.load(open(os.path.join(
                     hdir, "facts", sid + ".json")))
-                for u, _ts in sorted((fx.get("prs") or {}).items(),
-                                     key=lambda kv: kv[1]):
+            except Exception:
+                fx = {}
+            for u, _ts in sorted((fx.get("prs") or {}).items(),
+                                 key=lambda kv: kv[1]):
+                try:
                     e = url_prs.get(u) or {}
                     add(e.get("number") or int(u.rsplit("/", 1)[1]), u,
                         e.get("state", ""), e.get("title", ""),
                         e.get("branch", ""))
-            except Exception:
-                pass
+                except Exception:
+                    continue   # one malformed URL never drops the rest
         return out
 
     def artifacts_of(sid):
@@ -272,8 +276,11 @@ def main():
         ordered = []
 
         def add_from(s):
-            for m in re.findall(r"(?i)\bapg-?(\d{2,5})\b", s or ""):
-                t = "APG-%d" % int(m)
+            # two+ letter project key, two+ digits: matches JIRA-style keys
+            # without eating things like utf-8 or x-1
+            for m in re.findall(r"(?i)\b([a-z][a-z0-9]{1,9})-(\d{2,6})\b",
+                                s or ""):
+                t = "%s-%d" % (m[0].upper(), int(m[1]))
                 if t not in ordered:
                     ordered.append(t)
 
@@ -354,8 +361,9 @@ def main():
         if st in ("ready", "attention") and ra:
             waiting = max(int((now - ra).total_seconds()), 0)
         br = branch_of(cwd)
-        prs = prs_for(sid, br)
-        wt = worktrees_of(repo_root(cwd))
+        root = repo_root(cwd)
+        prs = prs_for(sid, br, root)
+        wt = worktrees_of(root)
         for p_ in prs:
             hb = p_.get("branch") or ""
             if hb and hb in wt:

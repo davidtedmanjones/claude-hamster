@@ -1,6 +1,6 @@
 # Hamster — VS Code sidebar
 
-A rich sidebar over the [hamster](../hamster/) tmux Claude-session system.
+A rich sidebar over the [hamster core](../core/) tmux Claude-session system.
 
 **Philosophy: the developer directs attention; hamster keeps
 the board.** Hamster tracks session state (working /
@@ -113,7 +113,7 @@ manages them.
 
 ## Settings
 
-- `hamster.path` — hamster script (default `~/.local/bin/hamster`)
+- `hamster.path` — hamster script (default empty = auto-resolve: existing hook wiring, else the bundled core at `~/.claude/hamster/bin`)
 - `hamster.terminalName` — the hamster terminal's name (default `hamster`)
 - `hamster.terminalLocation` — `editor` (default) or `panel`
 - `hamster.pollMs` — poll interval (default 1500)

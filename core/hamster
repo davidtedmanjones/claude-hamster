@@ -24,14 +24,14 @@ cur_target(){
   fi
 }
 kf(){ printf '%s/%s.json' "$HDIR" "$(printf '%s' "$1" | tr ':/ ' '___')"; }
-enc_cwd(){ printf '%s' "$1" | sed 's#[/.]#-#g'; }
 set_sid_opt(){ [ -n "${2:-}" ] && tmux set-option -w -t "$1" @hamster_sid "${2:0:8}" 2>/dev/null; }
 pinned_of(){ PF="$1" python3 -c "import json,os
 try: print(json.load(open(os.environ['PF'])).get('pinned_name') or '')
 except Exception: print('')"; }
 clear_pin(){ CF="$1" python3 -c "import json,os
 try:
- d=json.load(open(os.environ['CF'])); d.pop('pinned_name',None); json.dump(d,open(os.environ['CF'],'w'))
+ d=json.load(open(os.environ['CF'])); d.pop('pinned_name',None)
+ t=os.environ['CF']+'.tmp'; json.dump(d,open(t,'w')); os.replace(t,os.environ['CF'])
 except Exception: pass"; }
 
 title_for(){  # sid cwd -> short human label (user alias > latest ai-title > 1st prompt)
@@ -63,21 +63,27 @@ PY
 }
 
 prune_dead(){  # drop queue entries whose tmux window no longer exists
+  # a file that fails to parse is left alone — could be a torn concurrent
+  # write, and deleting it would lose the session's sid/snooze/name
   local live; live=$(tmux list-windows -a -F '#{session_name}:#{window_index}' 2>/dev/null)
   LIVE="$live" python3 - "$HDIR" <<'PY' 2>/dev/null || true
 import json,os,sys,glob
 live=set((os.environ.get("LIVE","") or "").split())
 for f in glob.glob(os.path.join(sys.argv[1],"*.json")):
     try: t=json.load(open(f)).get("target","")
-    except: os.remove(f); continue
+    except Exception: continue
     if t and t not in live:
         try: os.remove(f)
-        except: pass
+        except Exception: pass
 PY
 }
 
 load_conf(){  # render the keymap template (@HAMSTER@ -> this script) and source it
-  sed "s#@HAMSTER@#$SELF#g" "$HERE/hamster.tmux.conf" > "$HDIR/tmux.conf" 2>/dev/null || return 0
+  HAM_BIN="$SELF" python3 - "$HERE/hamster.tmux.conf" "$HDIR/tmux.conf" <<'PY' 2>/dev/null || return 0
+import os,sys
+s=open(sys.argv[1]).read().replace("@HAMSTER@",os.environ["HAM_BIN"])
+open(sys.argv[2],"w").write(s)
+PY
   tmux source-file "$HDIR/tmux.conf" 2>/dev/null || true
 }
 
@@ -99,7 +105,7 @@ for row in (os.environ.get("WINS","") or "").splitlines():
                 "pinned_name":d.get("pinned_name") or "",
                 "returned_at":d.get("returned_at") or "","snooze_until":d.get("snooze_until") or ""})
 tmp=os.path.join(hdir,".wheel-snapshot.tmp")
-json.dump({"saved_at":datetime.datetime.utcnow().isoformat()+"Z","windows":out},open(tmp,"w"))
+json.dump({"saved_at":datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None).isoformat()+"Z","windows":out},open(tmp,"w"))
 os.replace(tmp,os.path.join(hdir,"wheel-snapshot.json"))
 PY
 }
@@ -114,7 +120,7 @@ try: d=json.load(sys.stdin)
 except: d={}
 print((d.get('session_id') or '')+chr(9)+(d.get('cwd') or ''))" 2>/dev/null)
     sid="${meta%%$'\t'*}"; cwd="${meta#*$'\t'}"
-    act=$(tmux display-message -p -t "$TS" '#{session_name}:#{window_index}' 2>/dev/null)
+    act=$(tmux display-message -p -t "${t%%:*}" '#{session_name}:#{window_index}' 2>/dev/null)
     HW_T="$t" HW_SID="$sid" HW_CWD="$cwd" HW_ACT="$act" python3 - "$(kf "$t")" <<'PY'
 import json,os,sys,datetime
 f=sys.argv[1]; d={}
@@ -122,7 +128,7 @@ if os.path.exists(f):
     try: d=json.load(open(f))
     except: d={}
 d["target"]=os.environ["HW_T"]; d["state"]="returned"
-d["returned_at"]=datetime.datetime.utcnow().isoformat()+"Z"; d["snooze_until"]=""
+d["returned_at"]=datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None).isoformat()+"Z"
 d["attention"]=False; d["subagents"]=0   # turn finished -> clear pings + subagent count
 # unread marker: cleared by the statusline reconciler once the response is
 # plausibly SEEN — focused later (if unfocused now), or input/switch-away
@@ -131,7 +137,7 @@ d["unseen"]=True
 d["unseen_focus"]=(os.environ.get("HW_ACT","")==os.environ["HW_T"])
 if os.environ.get("HW_SID"): d["session_id"]=os.environ["HW_SID"]
 if os.environ.get("HW_CWD"): d["cwd"]=os.environ["HW_CWD"]
-json.dump(d,open(f,"w"))
+tmp=f+".tmp"; json.dump(d,open(tmp,"w")); os.replace(tmp,f)
 PY
     [ -n "$sid" ] && set_sid_opt "$t" "$sid"
     [ -n "$sid" ] && [ -z "$(pinned_of "$(kf "$t")")" ] && { lbl=$(title_for "$sid" "$cwd"); [ -n "$lbl" ] && tmux rename-window -t "$t" "$lbl"; }
@@ -152,7 +158,7 @@ if os.path.exists(f):
 d["target"]=os.environ["HW_T"]; d["state"]="working"; d["snooze_until"]=""
 d["attention"]=False; d["subagents"]=0   # you answered / new turn -> clear pings + subagent count
 d["unseen"]=False; d.pop("unseen_focus",None)
-json.dump(d,open(f,"w"))
+tmp=f+".tmp"; json.dump(d,open(tmp,"w")); os.replace(tmp,f)
 PY
     tmux set-option -w -t "$t" @hamster_state working 2>/dev/null
     tmux set-option -wu -t "$t" @hamster_sub 2>/dev/null
@@ -175,7 +181,7 @@ if os.path.exists(f):
     try: d=json.load(open(f))
     except: d={}
 d["target"]=os.environ["HW_T"]; d["attention"]=True
-json.dump(d,open(f,"w"))
+tmp=f+".tmp"; json.dump(d,open(tmp,"w")); os.replace(tmp,f)
 PY
         tmux set-option -w -t "$t" @hamster_state attention 2>/dev/null
         ;;
@@ -194,14 +200,16 @@ if os.path.exists(f):
 d["target"]=os.environ["HW_T"]
 n=int(d.get("subagents",0) or 0)+int(os.environ["HW_D"])
 if n<0: n=0
-d["subagents"]=n; json.dump(d,open(f,"w")); print(n)
+d["subagents"]=n
+tmp=f+".tmp"; json.dump(d,open(tmp,"w")); os.replace(tmp,f)
+print(n)
 PY
 )
     if [ "${n:-0}" -gt 0 ] 2>/dev/null; then tmux set-option -w -t "$t" @hamster_sub "⚒$n" 2>/dev/null
     else tmux set-option -wu -t "$t" @hamster_sub 2>/dev/null; fi
     ;;
   prev)  # back to the session you were just on
-    tmux last-window 2>/dev/null || tmux display-message "Hamster: no previous window"
+    tmux last-window -t "$TS" 2>/dev/null || tmux display-message "Hamster: no previous window"
     ;;
   relabel)  # refresh every wheel window's name from its session title
     n=0
@@ -300,7 +308,7 @@ if os.path.exists(f):
     try: d=json.load(open(f))
     except: d={}
 d["target"]=os.environ["HW_T"]; d["pinned_name"]=os.environ["HW_N"]
-json.dump(d,open(f,"w"))
+tmp=f+".tmp"; json.dump(d,open(tmp,"w")); os.replace(tmp,f)
 sid=d.get("session_id")
 if sid:  # name follows the SESSION, not the window: shared store with resurrect
     nf=os.path.expanduser("~/.claude/resurrect-names.json")
@@ -362,7 +370,7 @@ import sys,re,datetime
 m=re.match(r'^(\d+)([mhdw])$',sys.argv[1])
 if not m: sys.exit(1)
 u={'m':'minutes','h':'hours','d':'days','w':'weeks'}[m.group(2)]
-print((datetime.datetime.utcnow()+datetime.timedelta(**{u:int(m.group(1))})).isoformat()+"Z")
+print((datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)+datetime.timedelta(**{u:int(m.group(1))})).isoformat()+"Z")
 PY
 )
     fi
@@ -375,8 +383,8 @@ if os.path.exists(f):
     except: d={}
 d["target"]=os.environ["HW_T"]; d["state"]="returned"
 d["snooze_until"]=os.environ["HW_SU"]
-d.setdefault("returned_at", datetime.datetime.utcnow().isoformat()+"Z")
-json.dump(d,open(f,"w"))
+d.setdefault("returned_at", datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None).isoformat()+"Z")
+tmp=f+".tmp"; json.dump(d,open(tmp,"w")); os.replace(tmp,f)
 PY
     tmux set-option -w -t "$t" @hamster_state snoozed 2>/dev/null
     ;;
@@ -390,7 +398,7 @@ f=sys.argv[1]
 try: d=json.load(open(f))
 except Exception: sys.exit(0)
 d["snooze_until"]=""
-json.dump(d,open(f,"w"))
+tmp=f+".tmp"; json.dump(d,open(tmp,"w")); os.replace(tmp,f)
 PY
     tmux set-option -w -t "$t" @hamster_state ready 2>/dev/null
     tmux display-message "Hamster: unsnoozed" 2>/dev/null
@@ -412,7 +420,7 @@ f=sys.argv[1]; sid=os.environ["SID"]
 try: d=json.load(open(f))
 except Exception: d={}
 if sid in d: d.pop(sid); print("0")
-else: d[sid]=datetime.datetime.utcnow().isoformat()+"Z"; print("1")
+else: d[sid]=datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None).isoformat()+"Z"; print("1")
 tmp=f+".tmp"; json.dump(d,open(tmp,"w")); os.replace(tmp,f)
 PY
 )
@@ -442,7 +450,7 @@ try: cur=json.load(open(f))
 except Exception: cur={}
 arts=cur.get("artifacts") or []
 e={"url":"","path":"","label":os.environ.get("HA_LBL","").strip(),
-   "at":datetime.datetime.utcnow().isoformat()+"Z"}
+   "at":datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None).isoformat()+"Z"}
 if v.startswith("http://") or v.startswith("https://"): e["url"]=v
 else:
     p=os.path.abspath(os.path.expanduser(v))
@@ -470,7 +478,7 @@ tmp=f+".tmp"; json.dump(cur,open(tmp,"w")); os.replace(tmp,f)
 print("removed: %s"%(gone.get("url") or gone.get("path")))
 PY
         ;;
-      list|*)
+      list)
         python3 - "$af" <<'PY'
 import json,sys
 try: arts=json.load(open(sys.argv[1])).get("artifacts") or []
@@ -480,6 +488,7 @@ for i,a in enumerate(arts):
     print("%2d  %s%s"%(i,(a.get("label")+"  " if a.get("label") else ""),a.get("url") or a.get("path")))
 PY
         ;;
+      *) echo "usage: hamster artifact add <url|path> [label] | list | rm <i>"; exit 1;;
     esac
     ;;
   restart)  # respawn wheel claude processes in place (post claude-update); each resumes its sid
@@ -529,7 +538,6 @@ PY
     fi
     ;;
   json)  # wheel roster as JSON for external UIs (VS Code sidebar); read-only
-    prune_dead
     exec python3 "$HERE/wheelstate.py" "$HDIR" "$HOME/.claude/projects" "$TS"
     ;;
   enrich)  # refresh the PR cache for wheel branches via gh — slow rail, run in background
@@ -539,7 +547,7 @@ PY
     prune_dead
     python3 - "$HDIR" <<'PY'
 import json,sys,os,glob,datetime
-hdir=sys.argv[1]; now=datetime.datetime.utcnow()
+hdir=sys.argv[1]; now=datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
 def p(t):
     try: return datetime.datetime.fromisoformat((t or "").replace("Z",""))
     except: return None
@@ -566,7 +574,7 @@ PY
     python3 - "$HDIR" "$HOME/.claude/projects" "$TS" <<'PY'
 import json,sys,os,glob,datetime,re,time,subprocess
 hdir,proj=sys.argv[1],sys.argv[2]; ts=sys.argv[3] if len(sys.argv)>3 else "hamster"
-now=datetime.datetime.utcnow(); nowts=time.time()
+now=datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None); nowts=time.time()
 def p(t):
     try: return datetime.datetime.fromisoformat((t or "").replace("Z",""))
     except: return None
@@ -668,7 +676,8 @@ for fp in glob.glob(os.path.join(hdir,"*.json")):
         if seen:
             d["unseen"]=False; d.pop("unseen_focus",None); changed=True
     if changed:
-        try: json.dump(d,open(fp,"w"))
+        try:
+            tmp=fp+".tmp"; json.dump(d,open(tmp,"w")); os.replace(tmp,fp)
         except Exception: pass
     if act: state="working"; working+=1
     elif d.get("attention"): state="attention"; attn+=1
@@ -693,7 +702,12 @@ if attn: parts.insert(1,"%d need-you"%attn)
 print(" · ".join(parts))
 PY
     # roster insurance: catch renames/snoozes the hooks don't see (~10s cadence)
-    [ -z "$(find "$HDIR/wheel-snapshot.json" -newermt '-10 seconds' 2>/dev/null)" ] && snapshot_wheel
+    if python3 - "$HDIR/wheel-snapshot.json" <<'PY'
+import os,sys,time
+p=sys.argv[1]
+sys.exit(0 if (not os.path.exists(p) or time.time()-os.path.getmtime(p)>10) else 1)
+PY
+    then snapshot_wheel; fi
     ;;
   new)
     dir="${2:-$PWD}"; title="${3:-}"
@@ -708,7 +722,7 @@ if os.path.exists(f):
     try: d=json.load(open(f))
     except: d={}
 d["target"]=os.environ["HW_T"]; d["pinned_name"]=os.environ["HW_N"]
-json.dump(d,open(f,"w"))
+tmp=f+".tmp"; json.dump(d,open(tmp,"w")); os.replace(tmp,f)
 PY
     fi
     snapshot_wheel
@@ -743,10 +757,12 @@ PY
     set_sid_opt "$win" "$sid"
     HW_T="$win" HW_SID="$sid" HW_CWD="$cwd" python3 - "$(kf "$win")" <<'PY'
 import json,os,sys,datetime
+tmp=sys.argv[1]+".tmp"
 json.dump({"target":os.environ["HW_T"],"state":"returned",
-           "returned_at":datetime.datetime.utcnow().isoformat()+"Z",
+           "returned_at":datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None).isoformat()+"Z",
            "snooze_until":"","session_id":os.environ["HW_SID"],"cwd":os.environ["HW_CWD"]},
-          open(sys.argv[1],"w"))
+          open(tmp,"w"))
+os.replace(tmp,sys.argv[1])
 PY
     snapshot_wheel
     echo "adopted $sid -> $win  (cwd=$cwd)"
@@ -766,10 +782,12 @@ PY
       set_sid_opt "$win" "$sid"
       HW_T="$win" HW_SID="$sid" HW_CWD="$cwd" python3 - "$(kf "$win")" <<'PYA'
 import json,os,sys,datetime
+tmp=sys.argv[1]+".tmp"
 json.dump({"target":os.environ["HW_T"],"state":"returned",
-           "returned_at":datetime.datetime.utcnow().isoformat()+"Z",
+           "returned_at":datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None).isoformat()+"Z",
            "snooze_until":"","session_id":os.environ["HW_SID"],"cwd":os.environ["HW_CWD"]},
-          open(sys.argv[1],"w"))
+          open(tmp,"w"))
+os.replace(tmp,sys.argv[1])
 PYA
         n=$((n+1))
     done < <(EXCL="$exclude" SKIP="$skipcwd" python3 - "$man" <<'PYB'
@@ -822,8 +840,10 @@ for f in glob.glob(os.path.join(hdir,"*.json")):
     try: d=json.load(open(f))
     except Exception: continue
     tgt=d.get("target",""); sid=d.get("session_id","") or ""
-    dead = tgt not in live_t or (sid and live_t.get(tgt,"")!="" and live_t[tgt]!=sid[:8]) \
-           or (sid and live_t.get(tgt,"")=="")   # window gone, or this-gen window that isn't running this sid
+    # dead = window gone, or the window is visibly running a DIFFERENT sid.
+    # a live window with no sid option yet is trusted alive (resuming its sid
+    # anyway would spawn a duplicate of a running session)
+    dead = tgt not in live_t or (sid and live_t.get(tgt,"") not in ("", sid[:8]))
     if dead:
         orphans.append(f)
         ents.append({"sid":sid,"cwd":d.get("cwd") or "","name":d.get("pinned_name") or "",
@@ -847,13 +867,14 @@ for e in ents:
     restore.append("\x1f".join([sid,clean(e.get("cwd")),clean(e.get("name")),clean(e.get("pinned_name")),
                               clean(e.get("returned_at")),clean(e.get("snooze_until"))]))
 if orphans:
-    adir=os.path.join(hdir,"archive",datetime.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ"))
+    adir=os.path.join(hdir,"archive",datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None).strftime("%Y%m%dT%H%M%SZ"))
     os.makedirs(adir,exist_ok=True)
     for f in orphans:
         try: shutil.move(f,os.path.join(adir,os.path.basename(f)))
         except Exception: pass
 open(plan,"w").write("\n".join(restore)+("\n" if restore else ""))
-if defer: json.dump(defer,open(deferred,"w"))
+if defer:
+    tmpd=deferred+".tmp"; json.dump(defer,open(tmpd,"w")); os.replace(tmpd,deferred)
 elif os.path.exists(deferred): os.remove(deferred)
 if lost:   print("unrecoverable (no transcript): "+", ".join(lost))
 if active: print("left alone (open elsewhere right now): "+", ".join(active)+" — remembered; a later heal (or 'hamster adopt') can bring them in")
@@ -874,11 +895,11 @@ PY
         python3 - "$(kf "$win")" <<'PYW'
 import json,os,sys,datetime
 d={"target":os.environ["HW_T"],"state":"returned",
-   "returned_at":os.environ.get("HW_RAT") or datetime.datetime.utcnow().isoformat()+"Z",
+   "returned_at":os.environ.get("HW_RAT") or datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None).isoformat()+"Z",
    "snooze_until":os.environ.get("HW_SNZ",""),
    "session_id":os.environ.get("HW_SID",""),"cwd":os.environ.get("HW_CWD","")}
 if os.environ.get("HW_PIN"): d["pinned_name"]=os.environ["HW_PIN"]
-json.dump(d,open(sys.argv[1],"w"))
+tmp=sys.argv[1]+".tmp"; json.dump(d,open(tmp,"w")); os.replace(tmp,sys.argv[1])
 PYW
         n=$((n+1)); sleep 0.25
     done < "$plan"
@@ -920,7 +941,7 @@ Hamster — track tmux-hosted Claude sessions; you direct attention, it keeps th
   hamster status             show session states
   hamster json               roster as JSON (feeds the VS Code sidebar)
   hamster enrich             refresh branch→PR cache via gh (background; facts-hook.sh captures new PRs)
-UI lives in the VS Code extension (hamster-vscode): F4 jump · F3 snooze · F6 rename
+UI lives in the VS Code extension: F4 jump · F3 snooze · F6 rename
   F8 hide-snoozed · F11 new · F12 command menu — all native QuickPick overlays.
 tmux keys (bare-terminal fallbacks): prefix+]/[ cycle · prefix+p last-viewed · prefix+r ai-name
   prefix+x close · prefix+R redraw · prefix+Escape scrollback · F1/F2 step · F8 hide.
