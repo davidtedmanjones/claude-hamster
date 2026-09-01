@@ -60,10 +60,10 @@ shows).
 
 ## Row actions (hover)
 
-📌 pin · 💤 snooze / ⏰ unsnooze · ✨ ai-name ·
-⟲ restart claude in place (post claude-update; resumes the sid) ·
-✕ close (confirmed). Header: ◀ prev, ✚ new, ⤓ adopt, ⟲ all
-(restart every session — idle-only or force).
+Inline (hover): 📌 pin · 💤 snooze / ⏰ unsnooze — the high-frequency pair.
+Everything else is on **right-click** (native VS Code context menu): rename,
+AI-name, add artifact, restart claude in place, close (confirmed). Header:
+◀ prev, ✚ new, ⤓ adopt, ⟲ all (restart every session — idle-only or force).
 
 Clicking a row focuses it: selects the tmux window and reveals the hamster
 terminal, created as a **full editor tab** (`hamster.terminalLocation`,

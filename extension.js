@@ -154,6 +154,26 @@ async function ensureSetup(context) {
   }
 }
 
+async function maybeOfferFkeys(context) {
+  try {
+    if (context.globalState.get('fkeysPrompted')) return;
+    const insp = vscode.workspace.getConfiguration('hamster').inspect('fkeys');
+    if (insp && insp.globalValue !== undefined) {
+      await context.globalState.update('fkeysPrompted', true);
+      return;
+    }
+    const pick = await vscode.window.showInformationMessage(
+      'Hamster: enable the F-key layer? F4 jump, F12 menu, F3 snooze, F8 hide… '
+      + '(shadows F-keys inside terminals, e.g. htop — ctrl+alt chords work either way)',
+      'Enable F-keys', 'Keep ctrl+alt only');
+    await context.globalState.update('fkeysPrompted', true);
+    if (pick === 'Enable F-keys') {
+      await vscode.workspace.getConfiguration('hamster')
+        .update('fkeys', true, vscode.ConfigurationTarget.Global);
+    }
+  } catch (e) { /* never block activation */ }
+}
+
 async function installCli() {
   await setupDone;
   const bin = hamsterBin();
@@ -642,9 +662,6 @@ function html() {
       '<button data-a="pin" title="Pin / unpin — pinned sessions float above the a–z shelf (lenses override)">📌</button>' +
       '<button data-a="snooze" title="Snooze (hide) this session…">💤</button>' +
       '<button data-a="unsnooze" title="Unsnooze — back in the ready queue" hidden>⏰</button>' +
-      '<button data-a="ainame" title="AI-name this session from its chat">✨</button>' +
-      '<button data-a="restart" title="Restart the claude process (resumes this session in place)">⟲</button>' +
-      '<button data-a="close" title="End the session (kills its tmux window)">✕</button>' +
     '</span><span class="sub"></span><span class="subx" hidden></span>';
   const rowEls = new Map();   // target -> element, reused across polls
   const expandedRows = new Set();   // targets with the detail accordion open (ephemeral)
@@ -663,6 +680,9 @@ function html() {
   function updateRow(el, w) {
     const p = el._w || {};
     el.dataset.n = w.name;
+    const vsctx = JSON.stringify({ webviewSection: 'hamsterRow', preventDefaultContextMenuItems: true,
+      target: w.target, name: w.name, hamsterSnoozed: w.state === 'snoozed' });
+    if (el._vsctx !== vsctx) { el.setAttribute('data-vscode-context', vsctx); el._vsctx = vsctx; }
     const cls = 'row ' + w.state + (w.active ? ' active' : '') + (w.unseen ? ' unseen' : '');
     if (el._cls !== cls) {
       const hadState = p.state;
@@ -761,7 +781,7 @@ function html() {
       if (p.url) tipLines.push('#' + p.number + (p.state ? ' ' + p.state : '') + '  ' + p.url);
     }
     if (allPrs.length > tipPrs.length) tipLines.push('… +' + (allPrs.length - tipPrs.length) + ' more PRs');
-    tipLines.push('', w.last_text || '');
+    tipLines.push('', w.last_text || '', '', 'right-click for actions');
     const tip = tipLines.join('\\n');
     if (el._tip !== tip) { el.title = tip; el._tip = tip; }
     el._w = { state: w.state, subagents: w.subagents };
@@ -894,6 +914,15 @@ function activate(context) {
   const notes = new NotesProvider();
   provider.notes = notes;
   setupDone = ensureSetup(context);
+  setupDone.then(() => maybeOfferFkeys(context));
+  // row context-menu commands receive the row's data-vscode-context object
+  const rowCmd = (act) => (ctx) =>
+    provider.onMessage({ cmd: act, target: ctx && ctx.target, name: ctx && ctx.name });
+  for (const act of ['pin', 'snooze', 'unsnooze', 'rename', 'ainame',
+                     'addartifact', 'restart', 'close']) {
+    context.subscriptions.push(
+      vscode.commands.registerCommand('hamster.row.' + act, rowCmd(act)));
+  }
   context.subscriptions.push(
     vscode.commands.registerCommand('hamster.installCli', installCli));
   const onActive = (cmd) => async () => {

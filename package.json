@@ -2,7 +2,7 @@
   "name": "claude-hamster",
   "displayName": "Hamster",
   "description": "Rich sidebar for hamster tmux Claude sessions \u2014 state board, jump, snooze, notes, PR decoration; you direct attention, it never does.",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "publisher": "davidtedmanjones",
   "private": true,
   "engines": {
@@ -93,6 +93,38 @@
         "command": "hamster.openSettings",
         "title": "Hamster: Settings",
         "icon": "$(gear)"
+      },
+      {
+        "command": "hamster.row.pin",
+        "title": "Hamster: Pin / Unpin"
+      },
+      {
+        "command": "hamster.row.snooze",
+        "title": "Hamster: Snooze\u2026"
+      },
+      {
+        "command": "hamster.row.unsnooze",
+        "title": "Hamster: Unsnooze"
+      },
+      {
+        "command": "hamster.row.rename",
+        "title": "Hamster: Rename (Pin Name)\u2026"
+      },
+      {
+        "command": "hamster.row.ainame",
+        "title": "Hamster: AI-Name from Chat"
+      },
+      {
+        "command": "hamster.row.addartifact",
+        "title": "Hamster: Add Artifact\u2026"
+      },
+      {
+        "command": "hamster.row.restart",
+        "title": "Hamster: Restart Claude Process"
+      },
+      {
+        "command": "hamster.row.close",
+        "title": "Hamster: Close Session\u2026"
       }
     ],
     "keybindings": [
@@ -204,6 +236,82 @@
           "command": "hamster.openSettings",
           "when": "view == hamsterWheel",
           "group": "navigation@2"
+        }
+      ],
+      "webview/context": [
+        {
+          "command": "hamster.row.pin",
+          "when": "webviewSection == 'hamsterRow'",
+          "group": "1_row@1"
+        },
+        {
+          "command": "hamster.row.snooze",
+          "when": "webviewSection == 'hamsterRow' && !hamsterSnoozed",
+          "group": "1_row@2"
+        },
+        {
+          "command": "hamster.row.unsnooze",
+          "when": "webviewSection == 'hamsterRow' && hamsterSnoozed",
+          "group": "1_row@3"
+        },
+        {
+          "command": "hamster.row.rename",
+          "when": "webviewSection == 'hamsterRow'",
+          "group": "2_naming@1"
+        },
+        {
+          "command": "hamster.row.ainame",
+          "when": "webviewSection == 'hamsterRow'",
+          "group": "2_naming@2"
+        },
+        {
+          "command": "hamster.row.addartifact",
+          "when": "webviewSection == 'hamsterRow'",
+          "group": "3_facts@1"
+        },
+        {
+          "command": "hamster.row.restart",
+          "when": "webviewSection == 'hamsterRow'",
+          "group": "4_danger@1"
+        },
+        {
+          "command": "hamster.row.close",
+          "when": "webviewSection == 'hamsterRow'",
+          "group": "4_danger@2"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "hamster.row.pin",
+          "when": "false"
+        },
+        {
+          "command": "hamster.row.snooze",
+          "when": "false"
+        },
+        {
+          "command": "hamster.row.unsnooze",
+          "when": "false"
+        },
+        {
+          "command": "hamster.row.rename",
+          "when": "false"
+        },
+        {
+          "command": "hamster.row.ainame",
+          "when": "false"
+        },
+        {
+          "command": "hamster.row.addartifact",
+          "when": "false"
+        },
+        {
+          "command": "hamster.row.restart",
+          "when": "false"
+        },
+        {
+          "command": "hamster.row.close",
+          "when": "false"
         }
       ]
     }
