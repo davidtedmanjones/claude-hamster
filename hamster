@@ -1,0 +1,929 @@
+#!/usr/bin/env bash
+# Hamster — tmux-hosted Claude sessions, one per window, developer-directed.
+# Tracks each session's state (working / needs-you / ready / snoozed) via
+# Claude Code hooks; never moves your focus for you — you jump (F4, VS Code
+# sidebar), it just keeps the board honest. tmux keeps every session's full
+# history alive independent of any editor. Non-tmux Claude sessions self-skip.
+set -uo pipefail
+HDIR="$HOME/.claude/hamster"; mkdir -p "$HDIR"
+SRC="${BASH_SOURCE[0]}"; [ -L "$SRC" ] && SRC="$(readlink "$SRC")"  # resolve the ~/.local/bin symlink to the repo
+HERE="$(cd "$(dirname "$SRC")" && pwd)"
+SELF="$HERE/hamster"
+TS="${HAMSTER_TMUX_SESSION:-hamster}"
+CLAUDE_CMD="${HAMSTER_CLAUDE_CMD:-claude --dangerously-skip-permissions}"
+
+in_tmux(){ [ -n "${TMUX:-}" ] || [ -n "${HAMSTER_TARGET:-}" ]; }
+cur_target(){
+  # HAMSTER_TARGET: external UIs (VS Code sidebar) address any window without
+  # a tmux client — every "current window" command becomes target-addressable
+  if [ -n "${HAMSTER_TARGET:-}" ]; then printf '%s' "$HAMSTER_TARGET"; return; fi
+  if [ -n "${TMUX_PANE:-}" ]; then
+    tmux display-message -p -t "$TMUX_PANE" '#{session_name}:#{window_index}' 2>/dev/null
+  else
+    tmux display-message -p '#{session_name}:#{window_index}' 2>/dev/null
+  fi
+}
+kf(){ printf '%s/%s.json' "$HDIR" "$(printf '%s' "$1" | tr ':/ ' '___')"; }
+enc_cwd(){ printf '%s' "$1" | sed 's#[/.]#-#g'; }
+set_sid_opt(){ [ -n "${2:-}" ] && tmux set-option -w -t "$1" @hamster_sid "${2:0:8}" 2>/dev/null; }
+pinned_of(){ PF="$1" python3 -c "import json,os
+try: print(json.load(open(os.environ['PF'])).get('pinned_name') or '')
+except Exception: print('')"; }
+clear_pin(){ CF="$1" python3 -c "import json,os
+try:
+ d=json.load(open(os.environ['CF'])); d.pop('pinned_name',None); json.dump(d,open(os.environ['CF'],'w'))
+except Exception: pass"; }
+
+title_for(){  # sid cwd -> short human label (user alias > latest ai-title > 1st prompt)
+  python3 - "$1" "$2" "$HOME/.claude/projects" <<'PY'
+import json,sys,os,glob,re
+sid,cwd,proj=sys.argv[1],sys.argv[2],sys.argv[3]
+try:  # resurrect-names.json = the one user-given name store, shared with resurrect
+    a=json.load(open(os.path.expanduser("~/.claude/resurrect-names.json")))
+    if isinstance(a,dict) and a.get(sid):
+        print(" ".join(str(a[sid]).split())[:60]); raise SystemExit
+except SystemExit: raise
+except Exception: pass
+tp=os.path.join(proj,re.sub(r'[/.]','-',cwd),sid+".jsonl")
+if not os.path.exists(tp):                       # recorded cwd may differ from the project dir
+    g=glob.glob(os.path.join(proj,"*",sid+".jsonl")); tp=g[0] if g else tp
+title=first=None
+if os.path.exists(tp):
+    for line in open(tp):
+        try: d=json.loads(line)
+        except: continue
+        if d.get("type")=="ai-title" and d.get("aiTitle"): title=d["aiTitle"]
+        elif first is None and d.get("type")=="user":
+            m=d.get("message",{}); c=m.get("content")
+            if isinstance(c,list): c=" ".join(x.get("text","") for x in c if isinstance(x,dict))
+            c=(c or "").strip().replace("\n"," ")
+            if c and not c.startswith("<") and not c.startswith("["): first=c   # skip command/interrupt markers
+print(" ".join((title or first or ("session "+sid[:8])).split())[:60])
+PY
+}
+
+prune_dead(){  # drop queue entries whose tmux window no longer exists
+  local live; live=$(tmux list-windows -a -F '#{session_name}:#{window_index}' 2>/dev/null)
+  LIVE="$live" python3 - "$HDIR" <<'PY' 2>/dev/null || true
+import json,os,sys,glob
+live=set((os.environ.get("LIVE","") or "").split())
+for f in glob.glob(os.path.join(sys.argv[1],"*.json")):
+    try: t=json.load(open(f)).get("target","")
+    except: os.remove(f); continue
+    if t and t not in live:
+        try: os.remove(f)
+        except: pass
+PY
+}
+
+load_conf(){  # render the keymap template (@HAMSTER@ -> this script) and source it
+  sed "s#@HAMSTER@#$SELF#g" "$HERE/hamster.tmux.conf" > "$HDIR/tmux.conf" 2>/dev/null || return 0
+  tmux source-file "$HDIR/tmux.conf" 2>/dev/null || true
+}
+
+snapshot_wheel(){  # persist the wheel roster to wheel-snapshot.json — keyed by sid, not window
+  # index, so it survives a tmux-server death (reboot). 'heal' rebuilds from it.
+  local wins; wins=$(tmux list-windows -t "$TS" -F '#{session_name}:#{window_index}	#{window_name}' 2>/dev/null) || return 0
+  WINS="$wins" python3 - "$HDIR" <<'PY' 2>/dev/null || true
+import json,os,sys,datetime
+hdir=sys.argv[1]; out=[]
+for row in (os.environ.get("WINS","") or "").splitlines():
+    if "\t" not in row: continue
+    tgt,name=row.split("\t",1)
+    f=os.path.join(hdir,tgt.replace(":","_").replace("/","_").replace(" ","_")+".json")
+    try: d=json.load(open(f))
+    except Exception: continue
+    sid=d.get("session_id") or ""
+    if not sid and not d.get("pinned_name"): continue   # bare shells never heal
+    out.append({"sid":sid,"cwd":d.get("cwd") or "","name":name,
+                "pinned_name":d.get("pinned_name") or "",
+                "returned_at":d.get("returned_at") or "","snooze_until":d.get("snooze_until") or ""})
+tmp=os.path.join(hdir,".wheel-snapshot.tmp")
+json.dump({"saved_at":datetime.datetime.utcnow().isoformat()+"Z","windows":out},open(tmp,"w"))
+os.replace(tmp,os.path.join(hdir,"wheel-snapshot.json"))
+PY
+}
+
+case "${1:-}" in
+  stop-hook)   # a session finished a turn -> enqueue it + refresh its label
+    in_tmux || exit 0
+    t=$(cur_target); [ -z "$t" ] && exit 0
+    input="$(cat 2>/dev/null || true)"
+    meta=$(printf '%s' "$input" | python3 -c "import json,sys
+try: d=json.load(sys.stdin)
+except: d={}
+print((d.get('session_id') or '')+chr(9)+(d.get('cwd') or ''))" 2>/dev/null)
+    sid="${meta%%$'\t'*}"; cwd="${meta#*$'\t'}"
+    act=$(tmux display-message -p -t "$TS" '#{session_name}:#{window_index}' 2>/dev/null)
+    HW_T="$t" HW_SID="$sid" HW_CWD="$cwd" HW_ACT="$act" python3 - "$(kf "$t")" <<'PY'
+import json,os,sys,datetime
+f=sys.argv[1]; d={}
+if os.path.exists(f):
+    try: d=json.load(open(f))
+    except: d={}
+d["target"]=os.environ["HW_T"]; d["state"]="returned"
+d["returned_at"]=datetime.datetime.utcnow().isoformat()+"Z"; d["snooze_until"]=""
+d["attention"]=False; d["subagents"]=0   # turn finished -> clear pings + subagent count
+# unread marker: cleared by the statusline reconciler once the response is
+# plausibly SEEN — focused later (if unfocused now), or input/switch-away
+# (if focused now, so a returned-while-away response stays green)
+d["unseen"]=True
+d["unseen_focus"]=(os.environ.get("HW_ACT","")==os.environ["HW_T"])
+if os.environ.get("HW_SID"): d["session_id"]=os.environ["HW_SID"]
+if os.environ.get("HW_CWD"): d["cwd"]=os.environ["HW_CWD"]
+json.dump(d,open(f,"w"))
+PY
+    [ -n "$sid" ] && set_sid_opt "$t" "$sid"
+    [ -n "$sid" ] && [ -z "$(pinned_of "$(kf "$t")")" ] && { lbl=$(title_for "$sid" "$cwd"); [ -n "$lbl" ] && tmux rename-window -t "$t" "$lbl"; }
+    tmux set-option -w -t "$t" @hamster_state ready 2>/dev/null
+    tmux set-option -wu -t "$t" @hamster_sub 2>/dev/null
+    snapshot_wheel
+    ;;
+  submit-hook) # you submitted -> mark working, rotate to next returned
+    in_tmux || exit 0
+    cat >/dev/null 2>&1 || true
+    t=$(cur_target); [ -z "$t" ] && exit 0
+    HW_T="$t" python3 - "$(kf "$t")" <<'PY'
+import json,os,sys
+f=sys.argv[1]; d={}
+if os.path.exists(f):
+    try: d=json.load(open(f))
+    except: d={}
+d["target"]=os.environ["HW_T"]; d["state"]="working"; d["snooze_until"]=""
+d["attention"]=False; d["subagents"]=0   # you answered / new turn -> clear pings + subagent count
+d["unseen"]=False; d.pop("unseen_focus",None)
+json.dump(d,open(f,"w"))
+PY
+    tmux set-option -w -t "$t" @hamster_state working 2>/dev/null
+    tmux set-option -wu -t "$t" @hamster_sub 2>/dev/null
+    prune_dead
+    snapshot_wheel
+    ;;
+  notify-hook) # Notification hook: Claude is asking / waiting -> flag the window for attention
+    in_tmux || exit 0
+    t=$(cur_target); [ -z "$t" ] && exit 0
+    input="$(cat 2>/dev/null || true)"
+    typ=$(printf '%s' "$input" | python3 -c "import json,sys
+try: print((json.load(sys.stdin).get('notification_type') or '').lower())
+except: print('')" 2>/dev/null)
+    case "$typ" in
+      permission_prompt|elicitation_dialog)   # only a real question/permission = needs you (NOT plain idle)
+        HW_T="$t" python3 - "$(kf "$t")" <<'PY'
+import json,os,sys
+f=sys.argv[1]; d={}
+if os.path.exists(f):
+    try: d=json.load(open(f))
+    except: d={}
+d["target"]=os.environ["HW_T"]; d["attention"]=True
+json.dump(d,open(f,"w"))
+PY
+        tmux set-option -w -t "$t" @hamster_state attention 2>/dev/null
+        ;;
+    esac
+    ;;
+  subagent) # SubagentStart/Stop hook: adjust this window's running-subagent counter by $2 (+1/-1)
+    in_tmux || exit 0
+    cat >/dev/null 2>&1 || true
+    delta="${2:-0}"; t=$(cur_target); [ -z "$t" ] && exit 0
+    n=$(HW_T="$t" HW_D="$delta" python3 - "$(kf "$t")" <<'PY'
+import json,os,sys
+f=sys.argv[1]; d={}
+if os.path.exists(f):
+    try: d=json.load(open(f))
+    except: d={}
+d["target"]=os.environ["HW_T"]
+n=int(d.get("subagents",0) or 0)+int(os.environ["HW_D"])
+if n<0: n=0
+d["subagents"]=n; json.dump(d,open(f,"w")); print(n)
+PY
+)
+    if [ "${n:-0}" -gt 0 ] 2>/dev/null; then tmux set-option -w -t "$t" @hamster_sub "⚒$n" 2>/dev/null
+    else tmux set-option -wu -t "$t" @hamster_sub 2>/dev/null; fi
+    ;;
+  prev)  # back to the session you were just on
+    tmux last-window 2>/dev/null || tmux display-message "Hamster: no previous window"
+    ;;
+  relabel)  # refresh every wheel window's name from its session title
+    n=0
+    for f in "$HDIR"/*.json; do
+      [ -e "$f" ] || continue
+      m=$(python3 - "$f" <<'PY'
+import json,sys
+try: d=json.load(open(sys.argv[1]))
+except: sys.exit(0)
+print((d.get("target") or "")+chr(9)+(d.get("session_id") or "")+chr(9)+(d.get("cwd") or ""))
+PY
+)
+      tgt="${m%%$'\t'*}"; rest="${m#*$'\t'}"; sid="${rest%%$'\t'*}"; cwd="${rest#*$'\t'}"
+      { [ -z "$tgt" ] || [ -z "$sid" ]; } && continue
+      set_sid_opt "$tgt" "$sid"
+      [ -n "$(pinned_of "$(kf "$tgt")")" ] && continue   # leave hardcoded names alone
+      lbl=$(title_for "$sid" "$cwd"); [ -n "$lbl" ] && tmux rename-window -t "$tgt" "$lbl" 2>/dev/null && n=$((n+1))
+    done
+    echo "relabeled $n window(s)"
+    ;;
+  relabel-current)  # refresh just the current window's name from its AI title
+    in_tmux || { echo "not in a tmux session"; exit 1; }
+    t=$(cur_target); [ -z "$t" ] && exit 0
+    m=$(python3 - "$(kf "$t")" <<'PY'
+import json,sys
+try: d=json.load(open(sys.argv[1]))
+except: sys.exit(0)
+print((d.get("session_id") or "")+chr(9)+(d.get("cwd") or ""))
+PY
+)
+    sid="${m%%$'\t'*}"; cwd="${m#*$'\t'}"
+    [ -z "$sid" ] && { tmux display-message "Hamster: no session id for this window yet"; exit 0; }
+    clear_pin "$(kf "$t")"   # explicit relabel un-pins a hardcoded name
+    lbl=$(title_for "$sid" "$cwd")
+    if [ -n "$lbl" ]; then
+      tmux rename-window -t "$t" "$lbl"; set_sid_opt "$t" "$sid"
+      tmux display-message "Hamster: relabeled -> $lbl"
+    else tmux display-message "Hamster: no title found in transcript"; fi
+    ;;
+  ai-name)  # name current (or $2) window via an LLM reading the chat context (on-demand; fast model)
+    in_tmux || { echo "not in a tmux session"; exit 1; }
+    command -v claude >/dev/null 2>&1 || { tmux display-message "Hamster: claude not on PATH"; exit 0; }
+    t="${2:-$(cur_target)}"; [ -z "$t" ] && exit 0
+    meta=$(python3 - "$(kf "$t")" <<'PY'
+import json,sys
+try: d=json.load(open(sys.argv[1]))
+except: sys.exit(0)
+print((d.get("session_id") or "")+chr(9)+(d.get("cwd") or ""))
+PY
+)
+    sid="${meta%%$'\t'*}"; cwd="${meta#*$'\t'}"
+    [ -z "$sid" ] && { tmux display-message "Hamster: no session id for this window yet"; exit 0; }
+    excerpt=$(SID="$sid" CWD="$cwd" python3 - "$HOME/.claude/projects" <<'PY'
+import json,os,sys,glob,re
+sid=os.environ["SID"]; cwd=os.environ["CWD"]; proj=sys.argv[1]
+enc=lambda s: re.sub(r"[/.]","-",s)
+tp=os.path.join(proj,enc(cwd),sid+".jsonl")
+if not os.path.exists(tp):
+    g=glob.glob(os.path.join(proj,"*",sid+".jsonl")); tp=g[0] if g else tp
+msgs=[]
+if os.path.exists(tp):
+    for line in open(tp):
+        try: d=json.loads(line)
+        except: continue
+        t=d.get("type")
+        if t not in ("user","assistant"): continue
+        c=d.get("message",{}).get("content")
+        if isinstance(c,list): c=" ".join(x.get("text","") for x in c if isinstance(x,dict) and x.get("type")=="text")
+        c=(c or "").strip().replace("\n"," ")
+        if not c or c.startswith("<") or c.startswith("["): continue
+        msgs.append(("User: " if t=="user" else "Asst: ")+c[:400])
+sel=(msgs[:2]+msgs[-18:]) if len(msgs)>20 else msgs   # first asks + recent context
+print("\n".join(sel)[:6000])
+PY
+)
+    [ -z "$excerpt" ] && { tmux display-message "Hamster: no chat content to name from"; exit 0; }
+    tmux display-message "Hamster: naming…"
+    name=$(claude -p --model "${HAMSTER_NAME_MODEL:-claude-haiku-4-5}" --output-format text "Title this Claude Code session for a tmux tab. Reply with ONLY a concise 3-6 word title (no quotes, no punctuation, no trailing period) naming what the session is working on.
+
+TRANSCRIPT:
+$excerpt" 2>/dev/null | head -1 | tr -d '\"')
+    name=$(printf '%s' "$name" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' | cut -c1-60)
+    if [ -n "$name" ]; then clear_pin "$(kf "$t")"; tmux rename-window -t "$t" "$name"; set_sid_opt "$t" "$sid"; tmux display-message "Hamster: named -> $name"
+    else tmux display-message "Hamster: naming failed (no output from claude -p)"; fi
+    ;;
+  rename)  # hardcode (pin) the current window's name; auto-relabel won't overwrite it
+    in_tmux || { echo "not in a tmux session"; exit 1; }
+    t=$(cur_target); [ -z "$t" ] && exit 0
+    name="${2:-}"
+    [ -z "$name" ] && { tmux display-message "usage: hamster rename <name>"; exit 0; }
+    tmux rename-window -t "$t" "$name"
+    HW_T="$t" HW_N="$name" python3 - "$(kf "$t")" <<'PY'
+import json,os,sys
+f=sys.argv[1]; d={}
+if os.path.exists(f):
+    try: d=json.load(open(f))
+    except: d={}
+d["target"]=os.environ["HW_T"]; d["pinned_name"]=os.environ["HW_N"]
+json.dump(d,open(f,"w"))
+sid=d.get("session_id")
+if sid:  # name follows the SESSION, not the window: shared store with resurrect
+    nf=os.path.expanduser("~/.claude/resurrect-names.json")
+    try: a=json.load(open(nf))
+    except Exception: a={}
+    if not isinstance(a,dict): a={}
+    a[sid]=os.environ["HW_N"]
+    tmp=nf+".tmp"
+    json.dump(a,open(tmp,"w"),indent=1); os.replace(tmp,nf)
+PY
+    tmux display-message "Hamster: 📌 pinned name -> $name (won't auto-relabel; prefix+r to unpin/AI-name)"
+    ;;
+  hidesnooze)  # toggle hiding snoozed windows from the window list (they reappear when the snooze ends)
+    in_tmux || { echo "not in a tmux session"; exit 1; }
+    if [ "$(tmux show-option -gv @hamster_hidesnooze 2>/dev/null)" = "1" ]; then
+      tmux set-option -g @hamster_hidesnooze 0; tmux display-message "Hamster: snoozed windows shown"
+    else
+      tmux set-option -g @hamster_hidesnooze 1; tmux display-message "Hamster: 🙈 snoozed windows hidden (until snooze ends)"
+    fi
+    ;;
+  step)  # F1/F2: move prev/next window by index; skips snoozed windows while they're hidden
+    # Destination computed in one pass, single select-window. Never hop through
+    # intermediate windows: visiting a snoozed one makes it active, and the tab-bar
+    # hide filter exempts the active window -> hidden rows flash in and out.
+    in_tmux || exit 0
+    dir="${2:-next}"
+    hide=$(tmux show-option -gv @hamster_hidesnooze 2>/dev/null)
+    cur=$(tmux display-message -p -t "$TS" '#{window_index}')
+    tgt=$(tmux list-windows -t "$TS" -F '#{window_index} #{@hamster_state}' | \
+      awk -v cur="$cur" -v dir="$dir" -v hide="$hide" '
+        {idx[++n]=$1; st[$1]=$2}
+        END{
+          for(i=1;i<=n;i++) if(idx[i]==cur) c=i
+          for(s=1;s<n;s++){
+            j=(dir=="next") ? ((c-1+s)%n)+1 : ((c-1-s+n)%n)+1
+            w=idx[j]
+            if(hide=="1" && st[w]=="snoozed") continue
+            print w; exit
+          }
+        }')
+    [ -n "$tgt" ] && tmux select-window -t "$TS:$tgt"
+    ;;
+  close)  # end current session: kill its window, clean queue, jump to next returned
+    in_tmux || { echo "not in a tmux session"; exit 1; }
+    t=$(cur_target); [ -z "$t" ] && exit 0
+    prune_dead
+    rm -f "$(kf "$t")"
+    tmux kill-window -t "$t" 2>/dev/null
+    snapshot_wheel
+    ;;
+  snooze)
+    inc="${2:-}"; [ -z "$inc" ] && { echo "usage: hamster snooze <1m|5m|10m|15m|30m|1h|2h|4h|8h|1d|1w|forever>"; exit 1; }
+    t=$(cur_target); [ -z "$t" ] && exit 0
+    if [ "$inc" = forever ]; then
+      until="9999-01-01T00:00:00Z"   # never expires under the lazy su>now check; cleared by unsnooze
+    else
+      until=$(python3 - "$inc" <<'PY'
+import sys,re,datetime
+m=re.match(r'^(\d+)([mhdw])$',sys.argv[1])
+if not m: sys.exit(1)
+u={'m':'minutes','h':'hours','d':'days','w':'weeks'}[m.group(2)]
+print((datetime.datetime.utcnow()+datetime.timedelta(**{u:int(m.group(1))})).isoformat()+"Z")
+PY
+)
+    fi
+    [ -z "$until" ] && { echo "bad increment: $inc"; exit 1; }
+    HW_T="$t" HW_SU="$until" python3 - "$(kf "$t")" <<'PY'
+import json,os,sys,datetime
+f=sys.argv[1]; d={}
+if os.path.exists(f):
+    try: d=json.load(open(f))
+    except: d={}
+d["target"]=os.environ["HW_T"]; d["state"]="returned"
+d["snooze_until"]=os.environ["HW_SU"]
+d.setdefault("returned_at", datetime.datetime.utcnow().isoformat()+"Z")
+json.dump(d,open(f,"w"))
+PY
+    tmux set-option -w -t "$t" @hamster_state snoozed 2>/dev/null
+    ;;
+  unsnooze)  # clear a snooze on the current window; re-enters the ready queue, no rotation
+    t=$(cur_target); [ -z "$t" ] && exit 0
+    f=$(kf "$t")
+    [ -f "$f" ] || { tmux display-message "Hamster: not on the wheel" 2>/dev/null; exit 0; }
+    python3 - "$f" <<'PY'
+import json,sys
+f=sys.argv[1]
+try: d=json.load(open(f))
+except Exception: sys.exit(0)
+d["snooze_until"]=""
+json.dump(d,open(f,"w"))
+PY
+    tmux set-option -w -t "$t" @hamster_state ready 2>/dev/null
+    tmux display-message "Hamster: unsnoozed" 2>/dev/null
+    ;;
+  pin)  # toggle pin-to-top for the current window's session — sid-keyed so it
+    # survives restarts/re-adopts; the VS Code sidebar floats pinned sessions
+    # above the alphabetical shelf (lenses override while engaged)
+    t=$(cur_target); [ -z "$t" ] && exit 0
+    sid=$(python3 - "$(kf "$t")" <<'PY'
+import json,sys
+try: print(json.load(open(sys.argv[1])).get("session_id") or "")
+except Exception: print("")
+PY
+)
+    [ -z "$sid" ] && { tmux display-message "Hamster: no session id for this window yet" 2>/dev/null; exit 0; }
+    st=$(SID="$sid" python3 - "$HDIR/pins.json" <<'PY'
+import datetime,json,os,sys
+f=sys.argv[1]; sid=os.environ["SID"]
+try: d=json.load(open(f))
+except Exception: d={}
+if sid in d: d.pop(sid); print("0")
+else: d[sid]=datetime.datetime.utcnow().isoformat()+"Z"; print("1")
+tmp=f+".tmp"; json.dump(d,open(tmp,"w")); os.replace(tmp,f)
+PY
+)
+    if [ "$st" = 1 ]; then tmux display-message "Hamster: 📌 pinned to top" 2>/dev/null
+    else tmux display-message "Hamster: unpinned" 2>/dev/null; fi
+    ;;
+  artifact)  # add|list|rm session artifacts (links / files) — sid-keyed, shown in the sidebar
+    sub="${2:-list}"
+    t=$(cur_target); [ -z "$t" ] && exit 0
+    sid=$(python3 - "$(kf "$t")" <<'PY'
+import json,sys
+try: print(json.load(open(sys.argv[1])).get("session_id") or "")
+except Exception: print("")
+PY
+)
+    [ -z "$sid" ] && { echo "no session id for this window yet"; exit 1; }
+    af="$HDIR/artifacts/$sid.json"
+    case "$sub" in
+      add)
+        val="${3:-}"; [ -z "$val" ] && { echo "usage: hamster artifact add <url|path> [label]"; exit 1; }
+        label="${*:4}"
+        HA_VAL="$val" HA_LBL="$label" python3 - "$af" <<'PY'
+import datetime,json,os,sys
+f=sys.argv[1]; os.makedirs(os.path.dirname(f),exist_ok=True)
+v=os.environ["HA_VAL"]
+try: cur=json.load(open(f))
+except Exception: cur={}
+arts=cur.get("artifacts") or []
+e={"url":"","path":"","label":os.environ.get("HA_LBL","").strip(),
+   "at":datetime.datetime.utcnow().isoformat()+"Z"}
+if v.startswith("http://") or v.startswith("https://"): e["url"]=v
+else:
+    p=os.path.abspath(os.path.expanduser(v))
+    if not os.path.exists(p): print("warning: %s does not exist (recorded anyway)"%p)
+    e["path"]=p
+key=e["url"] or e["path"]
+if any((a.get("url") or a.get("path"))==key for a in arts): print("already recorded"); raise SystemExit
+arts.append(e); cur["artifacts"]=arts
+tmp=f+".tmp"; json.dump(cur,open(tmp,"w")); os.replace(tmp,f)
+print("added: %s"%key)
+PY
+        ;;
+      rm)
+        idx="${3:-}"; case "$idx" in ''|*[!0-9]*) echo "usage: hamster artifact rm <index from list>"; exit 1;; esac
+        HA_I="$idx" python3 - "$af" <<'PY'
+import json,os,sys
+f=sys.argv[1]
+try: cur=json.load(open(f))
+except Exception: cur={}
+arts=cur.get("artifacts") or []
+i=int(os.environ["HA_I"])
+if not (0<=i<len(arts)): print("no artifact %d"%i); raise SystemExit(1)
+gone=arts.pop(i); cur["artifacts"]=arts
+tmp=f+".tmp"; json.dump(cur,open(tmp,"w")); os.replace(tmp,f)
+print("removed: %s"%(gone.get("url") or gone.get("path")))
+PY
+        ;;
+      list|*)
+        python3 - "$af" <<'PY'
+import json,sys
+try: arts=json.load(open(sys.argv[1])).get("artifacts") or []
+except Exception: arts=[]
+if not arts: print("no artifacts recorded for this session")
+for i,a in enumerate(arts):
+    print("%2d  %s%s"%(i,(a.get("label")+"  " if a.get("label") else ""),a.get("url") or a.get("path")))
+PY
+        ;;
+    esac
+    ;;
+  restart)  # respawn wheel claude processes in place (post claude-update); each resumes its sid
+    # graceful: TERM the pane's process tree, wait for a clean exit, then respawn
+    # the same window with `claude --resume <sid>` — window, name, index, queue
+    # state all survive; only the process (and pane scrollback) is new.
+    scope="${2:-all}"   # all = every non-working session · force = working too · current = this window only
+    tmux has-session -t "$TS" 2>/dev/null || { echo "no wheel session"; exit 1; }
+    if [ "$scope" = current ]; then
+      targets=$(cur_target); [ -z "$targets" ] && exit 0
+    else
+      targets=$(tmux list-windows -t "$TS" -F '#{session_name}:#{window_index}' 2>/dev/null)
+    fi
+    n=0; skipped=""
+    for t in $targets; do
+      f=$(kf "$t"); [ -f "$f" ] || continue
+      m=$(python3 - "$f" <<'PY'
+import json,sys
+try: d=json.load(open(sys.argv[1]))
+except Exception: sys.exit(0)
+print((d.get("session_id") or "")+chr(9)+(d.get("state") or ""))
+PY
+)
+      sid="${m%%$'\t'*}"; st="${m#*$'\t'}"
+      [ -z "$sid" ] && continue   # pre-first-turn / shell windows: nothing to resume
+      if [ "$st" = working ] && [ "$scope" = all ]; then
+        skipped="$skipped $t"; continue
+      fi
+      pid=$(tmux list-panes -t "$t" -F '#{pane_pid}' 2>/dev/null | head -1)
+      tmux set-option -w -t "$t" remain-on-exit on 2>/dev/null
+      if [ -n "$pid" ]; then
+        pkill -TERM -P "$pid" 2>/dev/null; kill -TERM "$pid" 2>/dev/null
+        i=0
+        while [ "$i" -lt 40 ]; do   # up to ~10s for a clean exit, then respawn -k hard-kills
+          [ "$(tmux list-panes -t "$t" -F '#{pane_dead}' 2>/dev/null | head -1)" = 1 ] && break
+          sleep 0.25; i=$((i+1))
+        done
+      fi
+      tmux respawn-window -k -t "$t" "$CLAUDE_CMD --resume $sid" 2>/dev/null
+      tmux set-option -wu -t "$t" remain-on-exit 2>/dev/null
+      n=$((n+1))
+      sleep "${HAMSTER_RESTART_STAGGER:-0.5}"   # don't slam disk/CPU with 20 simultaneous resumes
+    done
+    echo "restarted $n session(s)"
+    [ -n "$skipped" ] && echo "skipped (mid-turn):$skipped — 'hamster restart force' includes them"
+    ;;
+  json)  # wheel roster as JSON for external UIs (VS Code sidebar); read-only
+    prune_dead
+    exec python3 "$HERE/wheelstate.py" "$HDIR" "$HOME/.claude/projects" "$TS"
+    ;;
+  enrich)  # refresh the PR cache for wheel branches via gh — slow rail, run in background
+    exec python3 "$HERE/enrich.py" "$HDIR"
+    ;;
+  status)
+    prune_dead
+    python3 - "$HDIR" <<'PY'
+import json,sys,os,glob,datetime
+hdir=sys.argv[1]; now=datetime.datetime.utcnow()
+def p(t):
+    try: return datetime.datetime.fromisoformat((t or "").replace("Z",""))
+    except: return None
+rows=[]
+SKIP={"wheel-snapshot.json","heal-deferred.json","pr-cache.json","pins.json"}
+for fp in glob.glob(os.path.join(hdir,"*.json")):
+    if os.path.basename(fp) in SKIP: continue
+    try: rows.append(json.load(open(fp)))
+    except: pass
+ret=[d for d in rows if d.get("state")=="returned"]
+ret.sort(key=lambda d: p(d.get("returned_at","")) or now)
+print("%-9s %-12s %-10s %s"%("STATE","TARGET","WAITING","CWD"))
+ready=snoozed=0
+for d in ret:
+    su=p(d.get("snooze_until","")); snz=bool(su and su>now)
+    ready+=0 if snz else 1; snoozed+=1 if snz else 0
+    ra=p(d.get("returned_at","")); wait=str(now-ra).split(".")[0] if ra else "?"
+    print("%-9s %-12s %-10s %s"%("snoozed" if snz else "ready", d.get("target",""), wait, d.get("cwd","")))
+work=sum(1 for d in rows if d.get("state")=="working")
+print("\n%d ready, %d snoozed, %d working"%(ready,snoozed,work))
+PY
+    ;;
+  statusline)  # status-right summary + reconcile state from transcripts + advance spinner (~1s)
+    python3 - "$HDIR" "$HOME/.claude/projects" "$TS" <<'PY'
+import json,sys,os,glob,datetime,re,time,subprocess
+hdir,proj=sys.argv[1],sys.argv[2]; ts=sys.argv[3] if len(sys.argv)>3 else "hamster"
+now=datetime.datetime.utcnow(); nowts=time.time()
+def p(t):
+    try: return datetime.datetime.fromisoformat((t or "").replace("Z",""))
+    except: return None
+enc=lambda s: re.sub(r"[/.]","-",s)
+def probe(sid,cwd):   # (active, midturn). active = written in last 30s AND mid-turn.
+    # midturn alone (mtime ignored) matters when subagents run: main loop blocks on the
+    # Task tool, main transcript goes quiet >30s, but the turn is still live.
+    if not sid: return (False,False)
+    tp=os.path.join(proj,enc(cwd),sid+".jsonl")
+    if not os.path.exists(tp):                       # recorded cwd may differ from the project dir
+        g=glob.glob(os.path.join(proj,"*",sid+".jsonl"))
+        if g: tp=g[0]
+    try:
+        fresh=nowts-os.path.getmtime(tp) <= 30
+        with open(tp,"rb") as f:
+            f.seek(0,2); sz=f.tell(); f.seek(max(0,sz-65536)); data=f.read().decode("utf-8","ignore")
+    except Exception: return (False,False)
+    for line in reversed(data.splitlines()):
+        try: d=json.loads(line)
+        except: continue
+        t=d.get("type")
+        if t=="assistant":
+            c=d.get("message",{}).get("content")
+            mid=bool(isinstance(c,list) and any(isinstance(x,dict) and x.get("type")=="tool_use" for x in c))
+            return (fresh and mid, mid)
+        if t=="user":
+            m=d.get("message",{}); c=m.get("content")
+            if isinstance(c,list): c=" ".join((x.get("text","") or "") for x in c if isinstance(x,dict))
+            txt=(c or "").strip()
+            if txt.startswith("<"): continue
+            if "interrupted by user" in txt.lower(): return (False,False)
+            return (fresh,True)
+    return (False,False)
+def agents_live(sid,cwd):   # running subagents = their transcripts still being written
+    # SubagentStart hook never fires (not a real CC event), so hook counter can't be
+    # trusted; agent-*.jsonl mtimes are ground truth. Covers background agents too,
+    # whose spawn returns instantly and leaves no pending tool_use in the main file.
+    # An agent quiet >60s inside one long tool call drops out — acceptable flicker.
+    if not sid: return 0
+    dp=os.path.join(proj,enc(cwd),sid,"subagents")
+    if not os.path.isdir(dp):
+        g=glob.glob(os.path.join(proj,"*",sid,"subagents"))
+        dp=g[0] if g else ""
+    if not dp: return 0
+    n=0
+    for fp in glob.glob(os.path.join(dp,"agent-*.jsonl")):
+        try:
+            if nowts-os.path.getmtime(fp)<=60: n+=1
+        except Exception: pass
+    return n
+frames="◐◓◑◒"
+# Read every window's current @hamster_* options in ONE call, then write ONLY what
+# changed. The previous version rewrote ~40 options every second from inside the
+# status #(), and each set triggered a status redraw — that storm desynced/blanked
+# the terminal. Diffing keeps the line silent when nothing is happening.
+wopt={}
+try:
+    o=subprocess.run(["tmux","list-windows","-a","-F",
+        "#{session_name}:#{window_index}\t#{@hamster_state}\t#{@hamster_sub}"],
+        capture_output=True,text=True).stdout
+    for ln in o.splitlines():
+        a=ln.split("\t")
+        if len(a)>=3: wopt[a[0]]=(a[1],a[2])
+except Exception: pass
+act_tgt=""; cact=0.0
+try:
+    act_tgt=subprocess.run(["tmux","display-message","-p","-t",ts,
+        "#{session_name}:#{window_index}"],capture_output=True,text=True).stdout.strip()
+    o=subprocess.run(["tmux","list-clients","-t",ts,"-F","#{client_activity}"],
+        capture_output=True,text=True).stdout
+    cact=max((float(x) for x in o.split() if x),default=0.0)
+except Exception: pass
+ops=[]
+total=ready=snoozed=working=attn=0
+SKIP={"wheel-snapshot.json","heal-deferred.json","pr-cache.json","pins.json"}
+for fp in glob.glob(os.path.join(hdir,"*.json")):
+    if os.path.basename(fp) in SKIP: continue
+    try: d=json.load(open(fp))
+    except: continue
+    total+=1; tgt=d.get("target",""); changed=False
+    su=p(d.get("snooze_until","")); act,mid=probe(d.get("session_id",""),d.get("cwd",""))
+    live=agents_live(d.get("session_id",""),d.get("cwd",""))
+    sub=int(d.get("subagents",0) or 0)
+    if live>sub: sub=live
+    if sub>0 and (mid or live>0): act=True   # fan-out: main transcript quiet but agents chewing
+    js=d.get("state")   # keep json.state honest — fixes interrupts / missed Stop events
+    if act and js!="working": d["state"]="working"; changed=True
+    elif (not act) and js=="working":
+        d["state"]="returned"; d.setdefault("returned_at",now.isoformat()+"Z"); changed=True
+    if not act and sub>0: sub=0   # no turn, no live agents -> clear
+    if int(d.get("subagents",0) or 0)!=sub: d["subagents"]=sub; changed=True
+    if d.get("unseen") and tgt and act_tgt:
+        rt=p(d.get("returned_at",""))
+        raep=(rt-datetime.datetime(1970,1,1)).total_seconds() if rt else None
+        if d.get("unseen_focus"):
+            seen=(tgt!=act_tgt) or (raep is not None and cact>raep)
+        else:
+            seen=(tgt==act_tgt)
+        if seen:
+            d["unseen"]=False; d.pop("unseen_focus",None); changed=True
+    if changed:
+        try: json.dump(d,open(fp,"w"))
+        except Exception: pass
+    if act: state="working"; working+=1
+    elif d.get("attention"): state="attention"; attn+=1
+    elif su and su>now: state="snoozed"; snoozed+=1
+    else: state="ready"; ready+=1
+    if not tgt: continue
+    sub_s=("⚒%d"%sub) if sub>0 else ""
+    cs,csub=wopt.get(tgt,("",""))
+    if cs!=state: ops.append(["set-option","-w","-t",tgt,"@hamster_state",state])
+    if csub!=sub_s: ops.append(["set-option","-w","-t",tgt,"@hamster_sub",sub_s] if sub_s else ["set-option","-wu","-t",tgt,"@hamster_sub"])
+if working>0:   # advance the spinner only when a working window references it
+    ops.insert(0,["set-option","-g","@hamster_spin",frames[int(nowts)%len(frames)]])
+if ops:
+    flat=[]
+    for i,o in enumerate(ops):
+        if i: flat.append(";")
+        flat+=o
+    try: subprocess.run(["tmux",*flat],stderr=subprocess.DEVNULL,stdout=subprocess.DEVNULL)
+    except Exception: pass
+parts=["%d sess"%total,"%d ready"%ready,"%d working"%working,"%d snoozed"%snoozed]
+if attn: parts.insert(1,"%d need-you"%attn)
+print(" · ".join(parts))
+PY
+    # roster insurance: catch renames/snoozes the hooks don't see (~10s cadence)
+    [ -z "$(find "$HDIR/wheel-snapshot.json" -newermt '-10 seconds' 2>/dev/null)" ] && snapshot_wheel
+    ;;
+  new)
+    dir="${2:-$PWD}"; title="${3:-}"
+    tmux has-session -t "$TS" 2>/dev/null || tmux new-session -d -s "$TS" -c "$dir"
+    win=$(tmux new-window -t "$TS" -c "$dir" -P -F '#{session_name}:#{window_index}' "$CLAUDE_CMD")
+    if [ -n "$title" ]; then   # explicit name = pinned, or first stop-hook relabels it away
+      tmux rename-window -t "$win" "$title"
+      HW_T="$win" HW_N="$title" python3 - "$(kf "$win")" <<'PY'
+import json,os,sys
+f=sys.argv[1]; d={}
+if os.path.exists(f):
+    try: d=json.load(open(f))
+    except: d={}
+d["target"]=os.environ["HW_T"]; d["pinned_name"]=os.environ["HW_N"]
+json.dump(d,open(f,"w"))
+PY
+    fi
+    snapshot_wheel
+    echo "launched $win  (cwd=$dir)"
+    ;;
+  adopt)  # resume ONE registered session into a new wheel window + enqueue
+    sid="${2:-}"; cwd="${3:-}"
+    [ -z "$sid" ] && { echo "usage: hamster adopt <session_id> [dir]"; exit 1; }
+    if [ -z "$cwd" ]; then  # cwd lookup: resurrect catalog first, legacy registry second
+      cwd=$(SID="$sid" python3 - "$HOME/.claude/active-sessions.jsonl" "$HOME/.claude/resurrect-snapshot.json" <<'PY'
+import json,os,sys
+sid=os.environ["SID"]; reg,snap=sys.argv[1],sys.argv[2]; cwd=""
+try:
+    e=json.load(open(snap)).get("sessions",{}).get(sid)
+    if isinstance(e,dict) and e.get("cwd"): cwd=e["cwd"]
+except Exception: pass
+if not cwd and os.path.exists(reg):
+    for line in open(reg):
+        try: d=json.loads(line)
+        except: continue
+        if d.get("session_id")==sid and d.get("cwd"): cwd=d["cwd"]
+print(cwd)
+PY
+)
+    fi
+    [ -z "$cwd" ] && { echo "no cwd for $sid in registry — pass it explicitly"; exit 1; }
+    tp=$(ls "$HOME/.claude/projects/"*/"$sid".jsonl 2>/dev/null | head -1)
+    [ -z "$tp" ] && { echo "no transcript for $sid on this machine — resume would open a blank fresh session"; exit 1; }
+    tmux has-session -t "$TS" 2>/dev/null || tmux new-session -d -s "$TS" -c "$cwd"
+    win=$(tmux new-window -t "$TS" -c "$cwd" -P -F '#{session_name}:#{window_index}' "$CLAUDE_CMD --resume $sid")
+    lbl=$(title_for "$sid" "$cwd"); [ -n "$lbl" ] && tmux rename-window -t "$win" "$lbl"
+    set_sid_opt "$win" "$sid"
+    HW_T="$win" HW_SID="$sid" HW_CWD="$cwd" python3 - "$(kf "$win")" <<'PY'
+import json,os,sys,datetime
+json.dump({"target":os.environ["HW_T"],"state":"returned",
+           "returned_at":datetime.datetime.utcnow().isoformat()+"Z",
+           "snooze_until":"","session_id":os.environ["HW_SID"],"cwd":os.environ["HW_CWD"]},
+          open(sys.argv[1],"w"))
+PY
+    snapshot_wheel
+    echo "adopted $sid -> $win  (cwd=$cwd)"
+    ;;
+  restore)  # resume snapshot sessions as wheel windows (kills nothing)
+    exclude="${2:-}"   # session_id to skip (e.g. the live control session)
+    skipcwd="${3:-}"   # skip sessions whose cwd contains this substring
+    man="${SR_MANIFEST:-$HOME/.claude/session-restore.json}"
+    [ -f "$man" ] || { echo "no snapshot at $man — run snapshot.sh first"; exit 1; }
+    tmux has-session -t "$TS" 2>/dev/null || tmux new-session -d -s "$TS"
+    load_conf
+    n=0
+    while IFS=$'\t' read -r cwd sid title; do
+      [ -z "$sid" ] && continue
+      win=$(tmux new-window -t "$TS" -c "$cwd" -P -F '#{session_name}:#{window_index}' "$CLAUDE_CMD --resume $sid")
+      lbl=$(title_for "$sid" "$cwd"); [ -n "$lbl" ] && tmux rename-window -t "$win" "$lbl"
+      set_sid_opt "$win" "$sid"
+      HW_T="$win" HW_SID="$sid" HW_CWD="$cwd" python3 - "$(kf "$win")" <<'PYA'
+import json,os,sys,datetime
+json.dump({"target":os.environ["HW_T"],"state":"returned",
+           "returned_at":datetime.datetime.utcnow().isoformat()+"Z",
+           "snooze_until":"","session_id":os.environ["HW_SID"],"cwd":os.environ["HW_CWD"]},
+          open(sys.argv[1],"w"))
+PYA
+        n=$((n+1))
+    done < <(EXCL="$exclude" SKIP="$skipcwd" python3 - "$man" <<'PYB'
+import json,sys,os
+excl=os.environ.get("EXCL",""); skip=os.environ.get("SKIP","")
+for s in json.load(open(sys.argv[1]))["sessions"]:
+    cwd=s.get("cwd",""); sid=s.get("session_id","")
+    if not sid: continue
+    if excl and sid==excl: continue
+    if skip and skip in cwd: continue
+    print("%s\t%s\t%s"%(cwd,sid,(os.path.basename(cwd.rstrip("/")) or "claude")))
+PYB
+)
+    echo "resumed + enqueued $n session(s) into '$TS' — run 'hamster start' to attach"
+    ;;
+  heal)  # rebuild wheel windows lost to a tmux-server death (reboot). Reads
+    # wheel-snapshot.json (the sid-keyed roster snapshot_wheel maintains); falls
+    # back to orphaned per-window state files for pre-snapshot generations.
+    tmux has-session -t "$TS" 2>/dev/null || tmux new-session -d -s "$TS"
+    livemap=$(tmux list-windows -t "$TS" -F '#{session_name}:#{window_index}	#{@hamster_sid}' 2>/dev/null)
+    plan="$(mktemp -t hamster-heal.XXXXXX)"
+    LIVEMAP="$livemap" python3 - "$HDIR" "$HOME/.claude/projects" "$plan" <<'PY'
+import json,os,sys,glob,time,datetime,shutil
+hdir,proj,plan=sys.argv[1],sys.argv[2],sys.argv[3]
+live_t={}; live_sids=set()
+for row in (os.environ.get("LIVEMAP","") or "").splitlines():
+    tgt,_,sp=row.partition("\t")
+    if not tgt: continue
+    live_t[tgt]=sp
+    if sp: live_sids.add(sp)
+def tp_of(sid,cwd):
+    import re
+    p=os.path.join(proj,re.sub(r"[/.]","-",cwd or ""),sid+".jsonl")
+    if os.path.exists(p): return p
+    g=glob.glob(os.path.join(proj,"*",sid+".jsonl")); return g[0] if g else ""
+snap=os.path.join(hdir,"wheel-snapshot.json"); ents=[]; orphans=[]
+if os.path.exists(snap):
+    try: ents=json.load(open(snap)).get("windows",[])
+    except Exception: ents=[]
+# sessions a previous heal skipped because they were open elsewhere — without
+# this they fall out of every roster and later heals forget they existed
+deferred=os.path.join(hdir,"heal-deferred.json")
+if os.path.exists(deferred):
+    try: ents+=json.load(open(deferred))
+    except Exception: pass
+# union: snapshot first (has display names), then orphaned per-window files —
+# dedup below is order-sensitive, so snapshot entries win for duplicated sids
+for f in glob.glob(os.path.join(hdir,"*.json")):
+    if os.path.basename(f) in ("wheel-snapshot.json","heal-deferred.json","pr-cache.json","pins.json"): continue
+    try: d=json.load(open(f))
+    except Exception: continue
+    tgt=d.get("target",""); sid=d.get("session_id","") or ""
+    dead = tgt not in live_t or (sid and live_t.get(tgt,"")!="" and live_t[tgt]!=sid[:8]) \
+           or (sid and live_t.get(tgt,"")=="")   # window gone, or this-gen window that isn't running this sid
+    if dead:
+        orphans.append(f)
+        ents.append({"sid":sid,"cwd":d.get("cwd") or "","name":d.get("pinned_name") or "",
+                     "pinned_name":d.get("pinned_name") or "",
+                     "returned_at":d.get("returned_at") or "","snooze_until":d.get("snooze_until") or ""})
+seen=set(); restore=[]; lost=[]; active=[]; defer=[]; now=time.time()
+for e in ents:
+    sid=e.get("sid") or ""
+    label=e.get("pinned_name") or e.get("name") or (os.path.basename((e.get("cwd") or "").rstrip("/")) or "claude")
+    if sid:
+        if sid in seen or sid[:8] in live_sids: continue
+        seen.add(sid)
+        tp=tp_of(sid,e.get("cwd") or "")
+        if not tp: lost.append("%s (%s)"%(label,sid[:8])); continue
+        if now-os.path.getmtime(tp)<120:
+            active.append("%s (%s)"%(label,sid[:8])); defer.append(e); continue
+    elif not (e.get("pinned_name") and e.get("cwd")):
+        continue   # nameless sid-less rows are junk, not windows
+    # \x1f delimiter: tab is IFS-whitespace to `read`, so empty fields would collapse
+    clean=lambda s:(s or "").replace("\x1f"," ").replace("\n"," ")
+    restore.append("\x1f".join([sid,clean(e.get("cwd")),clean(e.get("name")),clean(e.get("pinned_name")),
+                              clean(e.get("returned_at")),clean(e.get("snooze_until"))]))
+if orphans:
+    adir=os.path.join(hdir,"archive",datetime.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ"))
+    os.makedirs(adir,exist_ok=True)
+    for f in orphans:
+        try: shutil.move(f,os.path.join(adir,os.path.basename(f)))
+        except Exception: pass
+open(plan,"w").write("\n".join(restore)+("\n" if restore else ""))
+if defer: json.dump(defer,open(deferred,"w"))
+elif os.path.exists(deferred): os.remove(deferred)
+if lost:   print("unrecoverable (no transcript): "+", ".join(lost))
+if active: print("left alone (open elsewhere right now): "+", ".join(active)+" — remembered; a later heal (or 'hamster adopt') can bring them in")
+PY
+    n=0; first=""
+    while IFS=$'\x1f' read -r sid cwd name pinned rat snooze; do
+      [ -z "$sid" ] && [ -z "$pinned" ] && continue
+      dir="${cwd:-$HOME}"; [ -d "$dir" ] || dir="$HOME"
+      if [ -n "$sid" ]; then cmd="$CLAUDE_CMD --resume $sid"; else cmd="$CLAUDE_CMD"; fi
+      win=$(tmux new-window -d -t "$TS" -c "$dir" -P -F '#{session_name}:#{window_index}' "$cmd") || continue
+      [ -z "$first" ] && first="$win"
+      lbl="${pinned:-$name}"
+      [ -z "$lbl" ] && [ -n "$sid" ] && lbl=$(title_for "$sid" "$cwd")
+      [ -z "$lbl" ] && lbl=$(basename "${cwd:-claude}")
+      tmux rename-window -t "$win" "$lbl"
+      [ -n "$sid" ] && set_sid_opt "$win" "$sid"
+      HW_T="$win" HW_SID="$sid" HW_CWD="$cwd" HW_PIN="$pinned" HW_RAT="$rat" HW_SNZ="$snooze" \
+        python3 - "$(kf "$win")" <<'PYW'
+import json,os,sys,datetime
+d={"target":os.environ["HW_T"],"state":"returned",
+   "returned_at":os.environ.get("HW_RAT") or datetime.datetime.utcnow().isoformat()+"Z",
+   "snooze_until":os.environ.get("HW_SNZ",""),
+   "session_id":os.environ.get("HW_SID",""),"cwd":os.environ.get("HW_CWD","")}
+if os.environ.get("HW_PIN"): d["pinned_name"]=os.environ["HW_PIN"]
+json.dump(d,open(sys.argv[1],"w"))
+PYW
+        n=$((n+1)); sleep 0.25
+    done < "$plan"
+    rm -f "$plan"
+    [ -n "$first" ] && tmux select-window -t "$first" 2>/dev/null
+    snapshot_wheel
+    if [ "$n" -gt 0 ]; then echo "healed: restored $n window(s)"; else echo "wheel intact — nothing to heal"; fi
+    ;;
+  start)
+    tmux has-session -t "$TS" 2>/dev/null || tmux new-session -d -s "$TS"
+    load_conf
+    "$SELF" heal
+    if in_tmux; then
+      if [ "$(tmux display-message -p '#{session_name}' 2>/dev/null)" = "$TS" ]; then
+        tmux display-message "Hamster: already on the wheel ($(tmux list-windows -t "$TS" 2>/dev/null | wc -l | tr -d ' ') windows)"
+      else tmux switch-client -t "$TS"; fi
+    else tmux attach -t "$TS"; fi
+    ;;
+  *)
+    cat <<EOF
+Hamster — track tmux-hosted Claude sessions; you direct attention, it keeps the board.
+  hamster start              create/attach the hamster tmux session (auto-heals after a reboot)
+  hamster heal               rebuild session windows lost to a tmux-server death, names included
+  hamster new <dir> [title]  launch a Claude in a new window (cwd=<dir>); title = pinned
+  hamster adopt <sid> [dir]  resume one registered session into a window
+  hamster prev               back to the session you were just on
+  hamster close              end current session (kill window + clean state)
+  hamster snooze <inc>       hide current from the board: 1m 5m 10m 15m 30m 1h 2h 4h 8h 1d 1w · forever
+  hamster unsnooze           clear the current window's snooze
+  hamster hidesnooze         toggle whether snoozed sessions show (F8; VS Code sidebar follows)
+  hamster rename <name>      hardcode (pin) the current window's name — auto-relabel skips it
+  hamster pin                toggle pin-to-top for the current session (sidebar shelf floats it)
+  hamster artifact add <url|path> [label]  record a link/file artifact for the current session
+  hamster artifact list|rm <i>  list / remove them (Artifact-tool publishes auto-captured by hook)
+  hamster restart [current|all|force]  respawn claude processes in place, resuming each sid —
+                             post claude-update refresh; 'all' skips working sessions, 'force' doesn't
+  hamster relabel            refresh all window names from session AI titles
+  hamster relabel-current    refresh just the current window's name
+  hamster status             show session states
+  hamster json               roster as JSON (feeds the VS Code sidebar)
+  hamster enrich             refresh branch→PR cache via gh (background; facts-hook.sh captures new PRs)
+UI lives in the VS Code extension (hamster-vscode): F4 jump · F3 snooze · F6 rename
+  F8 hide-snoozed · F11 new · F12 command menu — all native QuickPick overlays.
+tmux keys (bare-terminal fallbacks): prefix+]/[ cycle · prefix+p last-viewed · prefix+r ai-name
+  prefix+x close · prefix+R redraw · prefix+Escape scrollback · F1/F2 step · F8 hide.
+State (working / needs-you / ready / snoozed) is driven by the Stop / UserPromptSubmit /
+Notification hooks; nothing ever moves your focus for you.
+EOF
+    ;;
+esac

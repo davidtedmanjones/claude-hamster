@@ -1,0 +1,186 @@
+{
+  "name": "claude-hamster",
+  "displayName": "Hamster",
+  "description": "Rich sidebar for hamster tmux Claude sessions \u2014 state board, jump, snooze, notes, PR decoration; you direct attention, it never does.",
+  "version": "0.1.0",
+  "publisher": "davidtedmanjones",
+  "private": true,
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "main": "./extension.js",
+  "activationEvents": [],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "hamster",
+          "title": "Hamster",
+          "icon": "media/hamster.svg"
+        }
+      ]
+    },
+    "views": {
+      "hamster": [
+        {
+          "type": "webview",
+          "id": "hamsterWheel",
+          "name": "Wheel"
+        },
+        {
+          "type": "webview",
+          "id": "hamsterNotes",
+          "name": "Session Notes",
+          "initialSize": 1
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "hamster.refresh",
+        "title": "Hamster: Refresh Wheel"
+      },
+      {
+        "command": "hamster.attach",
+        "title": "Hamster: Open Hamster Tab"
+      },
+      {
+        "command": "hamster.prev",
+        "title": "Hamster: Previous Session"
+      },
+      {
+        "command": "hamster.jump",
+        "title": "Hamster: Jump to Session\u2026"
+      },
+      {
+        "command": "hamster.menu",
+        "title": "Hamster: Command Menu\u2026"
+      },
+      {
+        "command": "hamster.new",
+        "title": "Hamster: New Session\u2026"
+      },
+      {
+        "command": "hamster.adopt",
+        "title": "Hamster: Adopt Sessions\u2026"
+      },
+      {
+        "command": "hamster.snoozeActive",
+        "title": "Hamster: Snooze Active Session\u2026"
+      },
+      {
+        "command": "hamster.renameActive",
+        "title": "Hamster: Rename Active Session\u2026"
+      },
+      {
+        "command": "hamster.hidesnooze",
+        "title": "Hamster: Toggle Hide-Snoozed"
+      },
+      {
+        "command": "hamster.stepPrev",
+        "title": "Hamster: Previous Window"
+      },
+      {
+        "command": "hamster.stepNext",
+        "title": "Hamster: Next Window"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "hamster.jump",
+        "key": "f4"
+      },
+      {
+        "command": "hamster.jump",
+        "key": "ctrl+alt+j"
+      },
+      {
+        "command": "hamster.prev",
+        "key": "ctrl+alt+p"
+      },
+      {
+        "command": "hamster.attach",
+        "key": "ctrl+alt+h"
+      },
+      {
+        "command": "hamster.menu",
+        "key": "f12",
+        "when": "terminalFocus"
+      },
+      {
+        "command": "hamster.snoozeActive",
+        "key": "f3",
+        "when": "terminalFocus"
+      },
+      {
+        "command": "hamster.renameActive",
+        "key": "f6",
+        "when": "terminalFocus"
+      },
+      {
+        "command": "hamster.hidesnooze",
+        "key": "f8",
+        "when": "terminalFocus"
+      },
+      {
+        "command": "hamster.new",
+        "key": "f11",
+        "when": "terminalFocus"
+      },
+      {
+        "command": "hamster.stepPrev",
+        "key": "f1",
+        "when": "terminalFocus"
+      },
+      {
+        "command": "hamster.stepNext",
+        "key": "f2",
+        "when": "terminalFocus"
+      }
+    ],
+    "configuration": {
+      "title": "Hamster",
+      "properties": {
+        "hamster.path": {
+          "type": "string",
+          "default": "~/.local/bin/hamster",
+          "description": "Path to the hamster script."
+        },
+        "hamster.terminalName": {
+          "type": "string",
+          "default": "hamster",
+          "description": "Name of the integrated terminal that hosts (or will host) the tmux wheel client."
+        },
+        "hamster.terminalLocation": {
+          "type": "string",
+          "enum": [
+            "editor",
+            "panel"
+          ],
+          "default": "editor",
+          "description": "Where the wheel terminal is created: a full editor tab (default) or the terminal panel."
+        },
+        "hamster.pollMs": {
+          "type": "number",
+          "default": 1500,
+          "description": "Wheel state poll interval in milliseconds."
+        },
+        "hamster.jiraBaseUrl": {
+          "type": "string",
+          "default": "",
+          "description": "Jira site for ticket chips; a ticket click opens <base>/browse/<KEY>. Empty disables."
+        },
+        "hamster.newSessionDir": {
+          "type": "string",
+          "default": "~",
+          "description": "Default working directory offered when launching a new wheel session."
+        }
+      }
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/davidtedmanjones/claude-hamster"
+  },
+  "license": "MIT"
+}
