@@ -859,9 +859,9 @@ function html() {
     const primTitle = (prim.source === 'manual' ? 'primary worktree (set manually)'
                       : prim.source === 'active' ? 'active worktree (guessed from the latest repo file this session touched)'
                       : 'session cwd')
-      + '\n' + (prim.path || '')
-      + (prim.path !== w.cwd ? '\nspawned in: ' + (w.cwd || '') : '')
-      + '\nopen in new window / reveal / copy';
+      + '\\n' + (prim.path || '')
+      + (prim.path !== w.cwd ? '\\nspawned in: ' + (w.cwd || '') : '')
+      + '\\nopen in new window / reveal / copy';
     const dirChip = (primBase || prim.branch)
       ? '<span class="c dirchip" data-p="' + esc(prim.path || '') + '" title="' + esc(primTitle) + '">'
         + primMark + esc(primBase) + (prim.branch ? ' ⎇ ' + esc(prim.branch) : '') + '</span>'
