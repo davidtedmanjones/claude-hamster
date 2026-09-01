@@ -2,7 +2,7 @@
   "name": "claude-hamster",
   "displayName": "Hamster",
   "description": "Rich sidebar for hamster tmux Claude sessions \u2014 state board, jump, snooze, notes, PR decoration; you direct attention, it never does.",
-  "version": "0.1.12",
+  "version": "0.1.13",
   "publisher": "davidtedmanjones",
   "private": true,
   "engines": {
@@ -133,6 +133,10 @@
       {
         "command": "hamster.row.setprimary",
         "title": "Set Primary Worktree\u2026"
+      },
+      {
+        "command": "hamster.addAllFolders",
+        "title": "Hamster: Add All Session Folders to Workspace"
       }
     ],
     "keybindings": [
@@ -230,6 +234,21 @@
           "type": "boolean",
           "default": false,
           "description": "Bind F1\u2013F12 to hamster actions (F4 jump globally; F1/F2/F3/F6/F8/F11/F12 while a terminal is focused). Off by default because it shadows F-keys in terminal TUIs like htop."
+        },
+        "hamster.workspaceFolders": {
+          "type": "string",
+          "enum": [
+            "off",
+            "focused",
+            "all"
+          ],
+          "default": "off",
+          "description": "Add sessions' primary worktree folders to the (multi-root) workspace: 'focused' adds a folder when you click its session row (builds up as you go); 'all' keeps every session's folder added automatically, snoozed included. Folders are never removed automatically."
+        },
+        "hamster.revealFolderOnFocus": {
+          "type": "boolean",
+          "default": false,
+          "description": "When a session row is clicked (and workspaceFolders is on), reveal its folder in the Explorer. Off by default \u2014 the reveal switches the sidebar away from Hamster."
         }
       }
     },

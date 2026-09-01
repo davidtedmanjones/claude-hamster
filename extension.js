@@ -241,6 +241,21 @@ async function cmdPrev() {
   await tmux(['last-window', '-t', (st && st.session) || 'hamster']);
   wheelTerminal(true);
 }
+function ensureFolders(paths) {
+  const cur = vscode.workspace.workspaceFolders || [];
+  const have = new Set(cur.map(f => f.uri.fsPath));
+  const missing = [...new Set(paths.filter(Boolean))].filter(p => !have.has(p));
+  if (!missing.length) return;
+  const first = cur.length === 0;
+  vscode.workspace.updateWorkspaceFolders(cur.length, 0,
+    ...missing.map(p => ({ uri: vscode.Uri.file(p) })));
+  if (first) {
+    vscode.window.showInformationMessage(
+      'Hamster: added ' + missing.length + ' folder(s) — an empty window becoming '
+      + 'a workspace reloads the extension host once; seamless after that.');
+  }
+}
+
 async function activeSession() {
   const st = await getState();
   const w = st && st.ok && (st.windows || []).find(x => x.active);
@@ -397,6 +412,10 @@ class WheelProvider {
     this.state = state;
     try { this.view.webview.postMessage({ type: 'state', state }); } catch (e) { /* view gone */ }
     if (this.notes) this.notes.update(state);
+    if (state.ok && cfg().get('workspaceFolders') === 'all') {
+      ensureFolders((state.windows || []).map(w =>
+        (w.primary && w.primary.path) || w.cwd));
+    }
     const c = state.counts || {};
     const n = (c.attention || 0) + (c.ready || 0);
     this.view.badge = n ? { value: n, tooltip: `${c.attention || 0} need you · ${c.ready || 0} ready` } : undefined;
@@ -461,10 +480,23 @@ class WheelProvider {
         }
         return;
       }
-      case 'focus':
+      case 'focus': {
         await tmux(['select-window', '-t', t]);
         wheelTerminal(true);
+        const mode = cfg().get('workspaceFolders');
+        if (mode === 'focused' || mode === 'all') {
+          const row = this.state && this.state.ok
+            && (this.state.windows || []).find(x => x.target === t);
+          const p = (row && row.primary && row.primary.path) || (row && row.cwd);
+          if (p) {
+            ensureFolders([p]);
+            if (cfg().get('revealFolderOnFocus')) {
+              vscode.commands.executeCommand('revealInExplorer', vscode.Uri.file(p));
+            }
+          }
+        }
         break;
+      }
       case 'prev': await cmdPrev(); break;
       case 'hidesnooze': await hamster(['hidesnooze'], { HAMSTER_TARGET: 'x' }); break;
       case 'pin': await hamster(['pin'], T); break;
@@ -1009,6 +1041,7 @@ async function cmdMenu(provider) {
     a && { label: '$(debug-restart) Restart claude — active session', act: 'restart' },
     { label: '$(debug-restart) Restart claude — ALL sessions…', act: 'restartAll' },
     { label: '$(eye-closed) Toggle hide-snoozed  (F8)', act: 'hidesnooze' },
+    { label: '$(root-folder) Add all session folders to this workspace', act: '__folders' },
     a && { label: '$(close) Close active session…', act: 'close' },
     { label: '$(terminal) Open hamster tab  (ctrl+alt+h)', act: 'attach' },
   ].filter(Boolean);
@@ -1018,6 +1051,7 @@ async function cmdMenu(provider) {
   });
   if (!p) return;
   if (p.act === '__jump') return cmdJump();
+  if (p.act === '__folders') return vscode.commands.executeCommand('hamster.addAllFolders');
   await provider.onMessage({ cmd: p.act, target: a && a.t, name: a && a.n });
 }
 
@@ -1058,6 +1092,11 @@ function activate(context) {
     vscode.commands.registerCommand('hamster.prev', () => cmdPrev().then(() => provider.tick())),
     vscode.commands.registerCommand('hamster.jump', () => cmdJump().then(() => provider.tick())),
     vscode.commands.registerCommand('hamster.menu', () => cmdMenu(provider)),
+    vscode.commands.registerCommand('hamster.addAllFolders', async () => {
+      const st = await getState();
+      if (!st || !st.ok) { vscode.window.showWarningMessage('Hamster: board offline'); return; }
+      ensureFolders((st.windows || []).map(w => (w.primary && w.primary.path) || w.cwd));
+    }),
     vscode.commands.registerCommand('hamster.openSettings', () =>
       vscode.commands.executeCommand('workbench.action.openSettings',
         '@ext:davidtedmanjones.claude-hamster')),
