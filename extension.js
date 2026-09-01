@@ -793,13 +793,26 @@ function html() {
         + esc(w.base || '') + (w.branch ? ' ⎇ ' + esc(w.branch) : '') + '</span>'
       : '';
     const xp = expandedRows.has(w.target);
+    // worktrees this session is involved with (via its PRs' head branches),
+    // beyond the cwd it sits in — usually main with one feature worktree
+    const wts = [];
+    for (const p of openPrs.concat(donePrs)) {
+      if (p.worktree && p.worktree !== w.cwd && !wts.some(x => x.path === p.worktree)) {
+        wts.push({ path: p.worktree, branch: p.branch || '' });
+      }
+    }
+    const wtChips = wts.slice(0, 2).map(x =>
+      '<span class="c dirchip" data-p="' + esc(x.path) + '" title="'
+      + esc(x.path) + ' — open in new window / reveal / copy">📁 '
+      + esc((x.path.split('/').pop() || x.branch).slice(0, 30)) + '</span>'
+    ).join(' ') + (wts.length > 2 ? ' <span class="c xpand" title="' + (wts.length - 2) + ' more worktrees — expand">+' + (wts.length - 2) + '📁</span>' : '');
     // collapsed: one nowrap line — dir chip + open PRs (terminal fill to 3) + expander
     const shownPrs = openPrs.concat(donePrs.slice(-(Math.max(0, 3 - openPrs.length))));
     const hiddenN = allPrs.length - shownPrs.length;
     const arts = w.artifacts || [];
     let subHtml;
     if (!xp) {
-      subHtml = [dirChip, shownPrs.map(p => prChip(p, false)).join(' ')].filter(Boolean).join(' ')
+      subHtml = [dirChip, wtChips, shownPrs.map(p => prChip(p, false)).join(' ')].filter(Boolean).join(' ')
         + (arts.length ? ' <span class="c xpand" title="' + arts.length + ' artifact(s) — expand to open">🔗' + arts.length + '</span>' : '')
         + (hiddenN > 0 ? ' <span class="c xpand" title="Show all ' + allPrs.length + ' PRs, worktrees, tickets and artifacts">+' + hiddenN + ' ▾</span>' : '');
     } else {
