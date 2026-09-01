@@ -77,23 +77,32 @@ def _title(proj, sid, cwd):  # user alias > latest ai-title > first user msg > s
     return " ".join((t or fst or ("session " + sid[:8])).split())[:44]
 
 
-def _live_pids():
-    """sid -> pid for running `claude ... --resume <sid>` processes. Fresh
-    (non-resume) sessions carry no sid in argv and can't be matched."""
+def _ps_args():
+    """pid -> args for every process, one snapshot."""
     m = {}
     try:
         out = subprocess.run(["ps", "-axo", "pid=,args="],
                              capture_output=True, text=True, timeout=5).stdout
         for ln in out.splitlines():
-            ln = ln.strip()
-            if "claude" not in ln or "--resume" not in ln:
-                continue
-            pid = ln.split(None, 1)[0]
-            mm = re.search(r"--resume\s+([0-9a-f][0-9a-f-]{7,})", ln)
-            if mm and pid.isdigit():
-                m[mm.group(1)] = int(pid)
+            f = ln.strip().split(None, 1)
+            if len(f) == 2 and f[0].isdigit():
+                m[int(f[0])] = f[1]
     except Exception:
         pass
+    return m
+
+
+def _live_pids(ps):
+    """sid -> pid for running `claude ... --resume <sid>` processes. Fresh
+    (non-resume) sessions carry no sid in argv; those are matched via the
+    pid the session registry recorded at registration instead."""
+    m = {}
+    for pid, args in ps.items():
+        if "claude" not in args or "--resume" not in args:
+            continue
+        mm = re.search(r"--resume\s+([0-9a-f][0-9a-f-]{7,})", args)
+        if mm:
+            m[mm.group(1)] = pid
     return m
 
 
@@ -134,7 +143,8 @@ def build_adopt(reg, hdir, proj, win_hours):
             sid = d.get("session_id")
             if sid and (sid not in last or (d.get("at") or "") > (last[sid].get("at") or "")):
                 last[sid] = d
-    pids = _live_pids()
+    ps = _ps_args()
+    pids = _live_pids(ps)
     rows = []
     for sid, d in last.items():
         if sid in tracked:
@@ -147,6 +157,12 @@ def build_adopt(reg, hdir, proj, win_hours):
         if not os.path.exists(tp):
             continue  # only offer resumable sessions
         pid = pids.get(sid)
+        if pid is None:   # registry-recorded pid: trust only if still a claude
+            rp = d.get("pid")
+            if isinstance(rp, int):
+                w = (ps.get(rp, "").split() or [""])[0]
+                if w == "claude" or w.endswith("/claude"):
+                    pid = rp
         fresh = False   # transcript written recently -> some process is on it
         try:
             import time
