@@ -2,7 +2,7 @@
   "name": "claude-hamster",
   "displayName": "Hamster",
   "description": "Rich sidebar for hamster tmux Claude sessions \u2014 state board, jump, snooze, notes, PR decoration; you direct attention, it never does.",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "publisher": "davidtedmanjones",
   "private": true,
   "engines": {
@@ -96,35 +96,35 @@
       },
       {
         "command": "hamster.row.pin",
-        "title": "Hamster: Pin / Unpin"
+        "title": "Pin / Unpin"
       },
       {
         "command": "hamster.row.snooze",
-        "title": "Hamster: Snooze\u2026"
+        "title": "Snooze\u2026"
       },
       {
         "command": "hamster.row.unsnooze",
-        "title": "Hamster: Unsnooze"
+        "title": "Unsnooze"
       },
       {
         "command": "hamster.row.rename",
-        "title": "Hamster: Rename (Pin Name)\u2026"
+        "title": "Rename (Pin Name)\u2026"
       },
       {
         "command": "hamster.row.ainame",
-        "title": "Hamster: AI-Name from Chat"
+        "title": "AI-Name from Chat"
       },
       {
         "command": "hamster.row.addartifact",
-        "title": "Hamster: Add Artifact\u2026"
+        "title": "Add Artifact\u2026"
       },
       {
         "command": "hamster.row.restart",
-        "title": "Hamster: Restart Claude Process"
+        "title": "Restart Claude Process"
       },
       {
         "command": "hamster.row.close",
-        "title": "Hamster: Close Session\u2026"
+        "title": "Close Session\u2026"
       }
     ],
     "keybindings": [
