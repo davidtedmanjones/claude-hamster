@@ -36,28 +36,36 @@ const SKIP_CMDS = ['hamster.jump', 'hamster.menu', 'hamster.snoozeActive',
   'hamster.renameActive', 'hamster.hidesnooze', 'hamster.new',
   'hamster.stepPrev', 'hamster.stepNext', 'hamster.prev', 'hamster.attach'];
 
-function findHookBin(sj) {
+async function exists(p) {
+  try { await fs.promises.access(p); return true; } catch (e) { return false; }
+}
+
+async function findHookBin(sj) {
   for (const e of ((sj.hooks || {}).Stop || [])) {
     for (const k of (e.hooks || [])) {
       const m = /^(.*\/hamster) stop-hook$/.exec(k.command || '');
-      if (m && fs.existsSync(m[1])) return m[1];
+      if (m && await exists(m[1])) return m[1];
     }
   }
   return null;
 }
 
-function syncCore(src, version) {
+async function syncCore(src, version) {
   const stamp = path.join(STABLE, '.version');
-  const fresh = fs.existsSync(stamp) && fs.readFileSync(stamp, 'utf8') === version
-    && CORE_FILES.every(f => fs.existsSync(path.join(STABLE, f)));
-  if (fresh) return;
-  fs.mkdirSync(STABLE, { recursive: true });
-  for (const f of CORE_FILES) fs.copyFileSync(path.join(src, f), path.join(STABLE, f));
-  for (const f of ['hamster', 'facts-hook.sh']) fs.chmodSync(path.join(STABLE, f), 0o755);
-  fs.writeFileSync(stamp, version);
+  try {
+    if (await fs.promises.readFile(stamp, 'utf8') === version) {
+      let all = true;
+      for (const f of CORE_FILES) if (!await exists(path.join(STABLE, f))) { all = false; break; }
+      if (all) return;
+    }
+  } catch (e) { /* first run */ }
+  await fs.promises.mkdir(STABLE, { recursive: true });
+  for (const f of CORE_FILES) await fs.promises.copyFile(path.join(src, f), path.join(STABLE, f));
+  for (const f of ['hamster', 'facts-hook.sh']) await fs.promises.chmod(path.join(STABLE, f), 0o755);
+  await fs.promises.writeFile(stamp, version);
 }
 
-function writeHooks(sj, settingsPath) {
+async function writeHooks(sj, settingsPath) {
   const ham = path.join(STABLE, 'hamster');
   const facts = path.join(STABLE, 'facts-hook.sh');
   const wanted = [
@@ -73,11 +81,13 @@ function writeHooks(sj, settingsPath) {
   for (const [ev, matcher, cmd] of wanted) {
     let entries = hooks[ev] = hooks[ev] || [];
     for (const e of entries) {   // strip broken wirings from old paths
-      e.hooks = (e.hooks || []).filter(k => {
+      const keep = [];
+      for (const k of (e.hooks || [])) {
         const c = k.command || '';
         const ours = /\/(hamster( |$)|facts-hook\.sh)/.test(c);
-        return !ours || c.startsWith(STABLE) || fs.existsSync(c.split(' ')[0]);
-      });
+        if (!ours || c.startsWith(STABLE) || await exists(c.split(' ')[0])) keep.push(k);
+      }
+      e.hooks = keep;
     }
     hooks[ev] = entries = entries.filter(e => (e.hooks || []).length);
     const hit = entries.some(e => (matcher == null || e.matcher === matcher)
@@ -88,8 +98,8 @@ function writeHooks(sj, settingsPath) {
       entries.push(e);
     }
   }
-  fs.writeFileSync(settingsPath + '.bak-claude-hamster', JSON.stringify(sj, null, 2));
-  fs.writeFileSync(settingsPath, JSON.stringify(sj, null, 2));
+  await fs.promises.writeFile(settingsPath + '.bak-claude-hamster', JSON.stringify(sj, null, 2));
+  await fs.promises.writeFile(settingsPath, JSON.stringify(sj, null, 2));
 }
 
 async function ensureSkipShell() {
@@ -107,13 +117,13 @@ async function ensureSetup(context) {
     await ensureSkipShell();
     const settingsPath = path.join(os.homedir(), '.claude', 'settings.json');
     let sj = {};
-    try { sj = JSON.parse(fs.readFileSync(settingsPath, 'utf8')); } catch (e) { /* fresh */ }
-    const hookBin = findHookBin(sj);
+    try { sj = JSON.parse(await fs.promises.readFile(settingsPath, 'utf8')); } catch (e) { /* fresh */ }
+    const hookBin = await findHookBin(sj);
     if (hookBin) { resolvedBin = hookBin; return; }   // existing install adopted
-    syncCore(path.join(context.extensionPath, 'core'),
+    await syncCore(path.join(context.extensionPath, 'core'),
       (context.extension && context.extension.packageJSON.version) || '0');
-    fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
-    writeHooks(sj, settingsPath);
+    await fs.promises.mkdir(path.dirname(settingsPath), { recursive: true });
+    await writeHooks(sj, settingsPath);
     resolvedBin = path.join(STABLE, 'hamster');
     vscode.window.showInformationMessage(
       'Hamster: Claude Code hooks wired; core installed to ~/.claude/hamster/bin. '
@@ -123,13 +133,13 @@ async function ensureSetup(context) {
   }
 }
 
-function installCli() {
+async function installCli() {
   const bin = hamsterBin();
   const dst = path.join(os.homedir(), '.local', 'bin', 'hamster');
   try {
-    fs.mkdirSync(path.dirname(dst), { recursive: true });
-    try { fs.unlinkSync(dst); } catch (e) { /* absent */ }
-    fs.symlinkSync(bin, dst);
+    await fs.promises.mkdir(path.dirname(dst), { recursive: true });
+    try { await fs.promises.unlink(dst); } catch (e) { /* absent */ }
+    await fs.promises.symlink(bin, dst);
     vscode.window.showInformationMessage('Hamster: linked ' + dst + ' → ' + bin
       + ' (ensure ~/.local/bin is on your PATH)');
   } catch (e) {
@@ -458,7 +468,7 @@ class WheelProvider {
         break;
       }
       case 'adopt': {
-        const here = path.dirname(fs.realpathSync(hamsterBin()));
+        const here = path.dirname(await fs.promises.realpath(hamsterBin()));
         const r = await exec('python3', [
           path.join(here, 'pick.py'), 'adopt', HDIR, PROJECTS, '/dev/null',
           path.join(os.homedir(), '.claude', 'active-sessions.jsonl'), '72',

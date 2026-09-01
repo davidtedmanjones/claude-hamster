@@ -524,7 +524,9 @@ PY
       sleep "${HAMSTER_RESTART_STAGGER:-0.5}"   # don't slam disk/CPU with 20 simultaneous resumes
     done
     echo "restarted $n session(s)"
-    [ -n "$skipped" ] && echo "skipped (mid-turn):$skipped — 'hamster restart force' includes them"
+    if [ -n "$skipped" ]; then
+      echo "skipped (mid-turn):$skipped — 'hamster restart force' includes them"
+    fi
     ;;
   json)  # wheel roster as JSON for external UIs (VS Code sidebar); read-only
     prune_dead
