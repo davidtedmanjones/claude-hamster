@@ -104,7 +104,8 @@ cands = [
 cmds = ["hamster.jump", "hamster.menu", "hamster.snoozeActive",
         "hamster.renameActive", "hamster.hidesnooze", "hamster.new",
         "hamster.stepPrev", "hamster.stepNext", "hamster.prev", "hamster.attach"]
-for c in cands:
+patched = 0
+for c in cands:   # patch every editor found — a user may run VS Code AND Cursor
     p = os.path.expanduser(c)
     if not os.path.exists(p):
         continue
@@ -121,9 +122,9 @@ for c in cands:
     d[key] = cur + [x for x in cmds if x not in cur]
     json.dump(d, open(p, "w"), indent=4)
     print("✓ editor terminal key passthrough (%s)" % p)
-    # no break: a user may run both VS Code and Cursor — patch every editor found
-else:
-    print("· no VS Code user settings found — skipped key passthrough")
+    patched += 1
+if not patched:
+    print("· no editor user settings found — skipped key passthrough")
 PY
 
 say ""
