@@ -78,7 +78,9 @@ switching), keyed by session id at `~/.claude/hamster/notes/<sid>.md`.
 ## Keybindings (rebindable)
 
 All UI is extension-level — native QuickPick overlays over the whole editor,
-never tmux popups. **F4** (global) opens the jump picker; `ctrl+alt+j/p/h`
+never tmux popups. The F-key layer is opt-in (`hamster.fkeys`, default off —
+it shadows F-keys in terminal TUIs). With it on: **F4** (global) opens the
+jump picker; `ctrl+alt+j/p/h`
 jump / previous / reveal tab. While a terminal is focused: **F3** snooze
 active, **F6** rename active, **F8** hide-snoozed, **F11** new session,
 **F12** command menu (every action, active-session aware), **F1/F2** window

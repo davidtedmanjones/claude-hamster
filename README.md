@@ -33,7 +33,9 @@ no auto-rotation, no "next task served". You glance, you choose, you jump.
   **worktree chips** (open that checkout in a new window), **artifact chips**
   (pages/recordings/demos the session produced), **per-session notes**
 - **F4** jump picker · **F12** command menu · **F3** snooze · **F8** hide-snoozed —
-  native VS Code overlays, intercepted before the terminal
+  native VS Code overlays, intercepted before the terminal (the F-key layer is
+  opt-in via the `hamster.fkeys` setting — it shadows F-keys in terminal TUIs
+  like htop; `ctrl+alt+j/p/h` are always on)
 
 ## Philosophy
 

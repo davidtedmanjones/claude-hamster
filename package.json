@@ -2,7 +2,7 @@
   "name": "claude-hamster",
   "displayName": "Hamster",
   "description": "Rich sidebar for hamster tmux Claude sessions \u2014 state board, jump, snooze, notes, PR decoration; you direct attention, it never does.",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "publisher": "davidtedmanjones",
   "private": true,
   "engines": {
@@ -37,7 +37,8 @@
     "commands": [
       {
         "command": "hamster.refresh",
-        "title": "Hamster: Refresh Wheel"
+        "title": "Hamster: Refresh Wheel",
+        "icon": "$(refresh)"
       },
       {
         "command": "hamster.attach",
@@ -53,7 +54,8 @@
       },
       {
         "command": "hamster.menu",
-        "title": "Hamster: Command Menu\u2026"
+        "title": "Hamster: Command Menu\u2026",
+        "icon": "$(list-unordered)"
       },
       {
         "command": "hamster.new",
@@ -86,12 +88,18 @@
       {
         "command": "hamster.installCli",
         "title": "Hamster: Install CLI (hamster on PATH)"
+      },
+      {
+        "command": "hamster.openSettings",
+        "title": "Hamster: Settings",
+        "icon": "$(gear)"
       }
     ],
     "keybindings": [
       {
         "command": "hamster.jump",
-        "key": "f4"
+        "key": "f4",
+        "when": "config.hamster.fkeys"
       },
       {
         "command": "hamster.jump",
@@ -108,37 +116,37 @@
       {
         "command": "hamster.menu",
         "key": "f12",
-        "when": "terminalFocus"
+        "when": "config.hamster.fkeys && terminalFocus"
       },
       {
         "command": "hamster.snoozeActive",
         "key": "f3",
-        "when": "terminalFocus"
+        "when": "config.hamster.fkeys && terminalFocus"
       },
       {
         "command": "hamster.renameActive",
         "key": "f6",
-        "when": "terminalFocus"
+        "when": "config.hamster.fkeys && terminalFocus"
       },
       {
         "command": "hamster.hidesnooze",
         "key": "f8",
-        "when": "terminalFocus"
+        "when": "config.hamster.fkeys && terminalFocus"
       },
       {
         "command": "hamster.new",
         "key": "f11",
-        "when": "terminalFocus"
+        "when": "config.hamster.fkeys && terminalFocus"
       },
       {
         "command": "hamster.stepPrev",
         "key": "f1",
-        "when": "terminalFocus"
+        "when": "config.hamster.fkeys && terminalFocus"
       },
       {
         "command": "hamster.stepNext",
         "key": "f2",
-        "when": "terminalFocus"
+        "when": "config.hamster.fkeys && terminalFocus"
       }
     ],
     "configuration": {
@@ -177,8 +185,27 @@
           "type": "string",
           "default": "~",
           "description": "Default working directory offered when launching a new wheel session."
+        },
+        "hamster.fkeys": {
+          "type": "boolean",
+          "default": false,
+          "description": "Bind F1\u2013F12 to hamster actions (F4 jump globally; F1/F2/F3/F6/F8/F11/F12 while a terminal is focused). Off by default because it shadows F-keys in terminal TUIs like htop."
         }
       }
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "hamster.menu",
+          "when": "view == hamsterWheel",
+          "group": "navigation@1"
+        },
+        {
+          "command": "hamster.openSettings",
+          "when": "view == hamsterWheel",
+          "group": "navigation@2"
+        }
+      ]
     }
   },
   "repository": {

@@ -147,7 +147,8 @@ async function ensureSetup(context) {
     resolvedBin = path.join(STABLE, 'hamster');
     vscode.window.showInformationMessage(
       'Hamster: Claude Code hooks wired; core installed to ~/.claude/hamster/bin. '
-      + 'Run "Hamster: Install CLI" to get `hamster` on your PATH (optional).');
+      + 'Optional: "Hamster: Install CLI" puts `hamster` on your PATH; the '
+      + 'hamster.fkeys setting enables the F-key layer (F4 jump, F12 menu…).');
   } catch (e) {
     console.error('hamster bootstrap failed', e);
   }
@@ -915,6 +916,9 @@ function activate(context) {
     vscode.commands.registerCommand('hamster.prev', () => cmdPrev().then(() => provider.tick())),
     vscode.commands.registerCommand('hamster.jump', () => cmdJump().then(() => provider.tick())),
     vscode.commands.registerCommand('hamster.menu', () => cmdMenu(provider)),
+    vscode.commands.registerCommand('hamster.openSettings', () =>
+      vscode.commands.executeCommand('workbench.action.openSettings',
+        '@ext:davidtedmanjones.claude-hamster')),
     vscode.commands.registerCommand('hamster.new', () => provider.onMessage({ cmd: 'new' })),
     vscode.commands.registerCommand('hamster.adopt', () => provider.onMessage({ cmd: 'adopt' })),
     vscode.commands.registerCommand('hamster.snoozeActive', onActive('snooze')),
