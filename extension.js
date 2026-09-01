@@ -665,6 +665,7 @@ function html() {
   .row.showdet .det { display: block; }
   .detline { display: flex; flex-wrap: wrap; gap: 2px 4px; align-items: center; margin-top: 2px; }
   .detlab { opacity: .5; min-width: 56px; flex: none; }
+  .wtpin.cur { border-color: var(--vscode-focusBorder, #007fd4); color: var(--vscode-textLink-foreground); opacity: 1; }
   .c { border: 1px solid rgba(128,128,128,.35); border-radius: 3px; padding: 0 4px; cursor: pointer; white-space: nowrap; }
   .c:hover { background: var(--vscode-toolbar-hoverBackground, rgba(128,128,128,.25)); }
   .ticket { flex: none; font-size: 10px; opacity: .6; border: 1px solid rgba(128,128,128,.4); border-radius: 3px; padding: 0 3px; }
@@ -860,11 +861,16 @@ function html() {
     const arts = w.artifacts || [];
     const detline = (lab, chips) => chips
       ? '<span class="detline"><span class="detlab">' + lab + '</span>' + chips + '</span>' : '';
+    const wtChip = (x, cur) =>
+      '<span class="c wtpin' + (cur ? ' cur' : '') + '" data-p="' + esc(x.path) + '" title="' + esc(x.path)
+      + (cur ? '\\nactive worktree for this session'
+             : '\\nclick: make this the primary worktree — the agent working elsewhere later re-takes it')
+      + '">📁 ' + esc((x.path.split('/').pop() || x.branch || '').slice(0, 34)) + '</span>';
+    const wtAll = (wts.length || prim.source !== 'cwd')
+      ? [wtChip({ path: prim.path, branch: prim.branch }, true)].concat(wts.map(x => wtChip(x, false))).join('')
+      : '';
     const detHtml =
-      detline('Worktrees:', wts.map(x =>
-        '<span class="c wtpin" data-p="' + esc(x.path) + '" title="' + esc(x.path)
-        + '\\nclick: make this the primary worktree — the agent working elsewhere later re-takes it">📁 '
-        + esc((x.path.split('/').pop() || x.branch).slice(0, 34)) + '</span>').join(''))
+      detline('Worktrees:', wtAll)
       + detline('PRs:', allPrs.map(prChip).join(''))
       + detline('Tickets:', (w.tickets || []).map(tk =>
         '<span class="c tkchip" data-k="' + esc(tk) + '" title="Open ' + esc(tk) + ' in Jira">' + esc(tk) + '</span>').join(''))
@@ -879,7 +885,11 @@ function html() {
       ? ' <span class="c xpand" title="' + (expandedRows.has(w.target) ? 'Collapse' : 'Show Worktrees / PRs / Tickets / Artifacts') + '">'
         + (expandedRows.has(w.target) ? '▴' : '▾') + '</span>'
       : '';
-    const subHtml = '<span class="subl">' + dirChip + expander + '</span><span class="subr">' + esc(procTxt) + '</span>';
+    const curPr = allPrs.find(pr => pr.branch && pr.branch === prim.branch)
+      || [...allPrs].reverse().find(pr => !pr.state || pr.state === 'open')
+      || null;
+    const subHtml = '<span class="subl">' + dirChip + (curPr ? ' ' + prChip(curPr) : '') + expander
+      + '</span><span class="subr">' + esc(procTxt) + '</span>';
     if (el._sub !== subHtml) { el.querySelector('.sub').innerHTML = subHtml; el._sub = subHtml; }
     el.classList.toggle('showdet', xp && hasDet);
     if (el._det !== detHtml) { el.querySelector('.det').innerHTML = detHtml; el._det = detHtml; }
