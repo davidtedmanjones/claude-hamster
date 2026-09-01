@@ -620,8 +620,10 @@ function html() {
   .row.unseen .dot { visibility: visible; }
   .pinstar { flex: none; font-size: 10px; }
   .name { overflow: hidden; text-overflow: ellipsis; flex: 1 1 auto; }
-  .meta { opacity: .55; flex: none; font-size: 9.5px; }
-  .sub { flex-basis: 100%; padding-left: 20px; font-size: 10px; opacity: .6; overflow: hidden; text-overflow: ellipsis; }
+  .meta { opacity: .85; flex: none; font-size: 9.5px; }
+  .sub { flex-basis: 100%; padding-left: 20px; font-size: 10px; opacity: .6; display: flex; gap: 6px; }
+  .subl { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .subr { flex: none; opacity: .8; }
   .subx { flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 2px 4px; padding: 2px 8px 4px 20px; font-size: 10px; opacity: .75; }
   .c { border: 1px solid rgba(128,128,128,.35); border-radius: 3px; padding: 0 4px; cursor: pointer; white-space: nowrap; }
   .c:hover { background: var(--vscode-toolbar-hoverBackground, rgba(128,128,128,.25)); }
@@ -764,9 +766,10 @@ function html() {
       ? (pc.rss_kb >= 1048576 ? (pc.rss_kb / 1048576).toFixed(1) + 'G'
                               : Math.round(pc.rss_kb / 1024) + 'M')
       : '';
+    const procTxt = pc.alive
+      ? '⚡' + mem + (pc.cpu >= 10 ? ' ' + Math.round(pc.cpu) + '%' : '')
+      : '⭘ off';
     const meta = [w.subagents ? '⚒' + w.subagents : '',
-                  pc.alive ? '⚡' + mem + (pc.cpu >= 10 ? ' ' + Math.round(pc.cpu) + '%' : '')
-                           : '⭘ off',
                   w.state === 'snoozed' ? dur(w.snooze_left_s) : dur(w.waiting_s)]
                  .filter(Boolean).join(' ');
     setText(el, '.meta', meta);
@@ -802,6 +805,7 @@ function html() {
     } else {
       subHtml = [dirChip, '<span class="c xpand" title="Collapse">▴ collapse</span>'].filter(Boolean).join(' ');
     }
+    subHtml = '<span class="subl">' + subHtml + '</span><span class="subr">' + esc(procTxt) + '</span>';
     if (el._sub !== subHtml) { el.querySelector('.sub').innerHTML = subHtml; el._sub = subHtml; }
     // expanded: wrapped block — every PR (worktree chip when checked out) + ticket chips
     let subxHtml = '';
