@@ -82,8 +82,14 @@ Optional: [gh](https://cli.github.com) for PR chips.
 [releases](https://github.com/davidtedmanjones/claude-hamster/releases):
 
 ```sh
-code --install-extension claude-hamster-<version>.vsix
+code --install-extension claude-hamster-<version>.vsix      # VS Code
+cursor --install-extension claude-hamster-<version>.vsix    # Cursor
 ```
+
+Works in VS Code, Cursor, and other VS Code forks — the bootstrap writes the
+Claude hooks to the shared `~/.claude/settings.json` and the key passthrough
+to whichever editor is running it, so both editors can even run the board
+side by side.
 
 Everything else is automatic: on first activation the extension installs its
 bundled core to `~/.claude/hamster/bin`, wires the Claude Code hooks, and sets

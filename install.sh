@@ -77,7 +77,8 @@ PY
 
 # 3. VS Code extension (skip silently if VS Code isn't set up)
 linked=""
-for extdir in "$HOME/.vscode/extensions" "$HOME/.vscode-insiders/extensions"; do
+for extdir in "$HOME/.vscode/extensions" "$HOME/.vscode-insiders/extensions" \
+              "$HOME/.cursor/extensions" "$HOME/.vscode-oss/extensions"; do
   if [ -d "$(dirname "$extdir")" ]; then
     mkdir -p "$extdir"
     ln -sfn "$HERE" "$extdir/claude-hamster"
@@ -92,9 +93,13 @@ python3 - <<'PY'
 import json, os, sys
 cands = [
     "~/Library/Application Support/Code/User/settings.json",             # macOS
+    "~/Library/Application Support/Cursor/User/settings.json",
     "~/Library/Application Support/Code - Insiders/User/settings.json",
+    "~/Library/Application Support/VSCodium/User/settings.json",
     "~/.config/Code/User/settings.json",                                 # linux
+    "~/.config/Cursor/User/settings.json",
     "~/.config/Code - Insiders/User/settings.json",
+    "~/.config/VSCodium/User/settings.json",
 ]
 cmds = ["hamster.jump", "hamster.menu", "hamster.snoozeActive",
         "hamster.renameActive", "hamster.hidesnooze", "hamster.new",
@@ -115,8 +120,8 @@ for c in cands:
     cur = d.get(key, [])
     d[key] = cur + [x for x in cmds if x not in cur]
     json.dump(d, open(p, "w"), indent=4)
-    print("✓ VS Code terminal key passthrough (%s)" % p)
-    break
+    print("✓ editor terminal key passthrough (%s)" % p)
+    # no break: a user may run both VS Code and Cursor — patch every editor found
 else:
     print("· no VS Code user settings found — skipped key passthrough")
 PY
