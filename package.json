@@ -2,7 +2,7 @@
   "name": "claude-hamster",
   "displayName": "Hamster",
   "description": "Rich sidebar for hamster tmux Claude sessions \u2014 state board, jump, snooze, notes, PR decoration; you direct attention, it never does.",
-  "version": "0.1.14",
+  "version": "0.1.15",
   "publisher": "davidtedmanjones",
   "private": true,
   "engines": {
@@ -26,11 +26,6 @@
           "type": "webview",
           "id": "hamsterWheel",
           "name": "Wheel"
-        },
-        {
-          "type": "webview",
-          "id": "hamsterNotes",
-          "name": "Session Notes"
         }
       ]
     },
@@ -253,6 +248,11 @@
           "type": "boolean",
           "default": false,
           "description": "When a session row is clicked (and workspaceFolders is on), reveal its folder in the Explorer. Off by default \u2014 the reveal switches the sidebar away from Hamster."
+        },
+        "hamster.detailedRows": {
+          "type": "boolean",
+          "default": false,
+          "description": "Every row always shows its labeled Worktrees / PRs / Tickets / Artifacts lines. Off: rows stay single-line and a row's \u25be expands it on demand. The \u2263 details header chip toggles this."
         }
       }
     },

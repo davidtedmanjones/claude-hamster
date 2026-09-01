@@ -13,7 +13,7 @@ M._load = function (req, ...a) {
     : orig.apply(this, [req, ...a]);
 };
 const src = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8')
-  + '\nmodule.exports.__views = [html, notesHtml];';
+  + '\nmodule.exports.__views = [html];';
 const tmp = path.join(require('os').tmpdir(), 'hamster-served-check.js');
 fs.writeFileSync(tmp, src);
 let bad = 0;

@@ -279,99 +279,16 @@ async function cmdJump() {
   wheelTerminal(true);
 }
 
-// Per-session free-text notes, keyed by sid (survives restarts/reorders),
-// stored as ~/.claude/hamster/notes/<sid>.md. Follows the active session.
-class NotesProvider {
-  constructor() { this.view = null; this.curSid = null; this.saving = Promise.resolve(); }
-
-  resolveWebviewView(view) {
-    this.view = view;
-    view.webview.options = { enableScripts: true };
-    view.webview.html = notesHtml();
-    view.webview.onDidReceiveMessage(m => {
-      if (m.cmd !== 'save' || !m.sid) return;
-      // serialized: update() awaits this chain before reading, so a rapid
-      // A→B→A switch can't read A's file ahead of A's in-flight save
-      this.saving = this.saving.then(async () => {
-        try {
-          await fs.promises.mkdir(NOTES, { recursive: true });
-          await fs.promises.writeFile(path.join(NOTES, m.sid + '.md'), m.text || '');
-        } catch (e) {
-          vscode.window.showErrorMessage('Hamster notes: ' + e.message);
-        }
-      });
-    });
-    view.onDidDispose(() => { this.view = null; this.curSid = null; });
-    this.curSid = null;   // force a load on next update
-  }
-
-  async update(state) {
-    if (!this.view) return;
-    let sid = '', label = 'wheel offline';
-    if (state && state.ok) {
-      const w = (state.windows || []).find(x => x.active) || null;
-      if (w) {
-        sid = w.sid || '';
-        label = sid ? `${w.name} — ${sid.slice(0, 8)}` : `${w.name} — no session id yet`;
-      } else label = 'no active session';
-    }
-    if (sid === this.curSid) {
-      try { this.view.webview.postMessage({ type: 'load', sid, label, sameSid: true }); } catch (e) { }
-      return;
-    }
-    let text = '';
-    if (sid) {
-      await this.saving;   // any in-flight save for this sid lands first
-      try { text = await fs.promises.readFile(path.join(NOTES, sid + '.md'), 'utf8'); }
-      catch (e) { text = ''; }
-    }
-    this.curSid = sid;
-    try { this.view.webview.postMessage({ type: 'load', sid, label, text }); } catch (e) { }
-  }
-}
-
-function notesHtml() {
-  return /* html */ `<!DOCTYPE html>
-<html><head><meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline';">
-<style>
-  html, body { height: 100%; }
-  body { margin: 0; display: flex; flex-direction: column; font-family: var(--vscode-font-family); }
-  #who { flex: none; padding: 3px 8px; font-size: 10px; opacity: .6; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  textarea { flex: 1; width: 100%; box-sizing: border-box; border: none; outline: none; resize: none;
-    background: transparent; color: var(--vscode-foreground, inherit);
-    padding: 4px 8px; font-family: var(--vscode-editor-font-family, monospace); font-size: 12px; }
-</style></head><body>
-<div id="who">…</div>
-<textarea id="ta" placeholder="Notes for this session — autosaved, follows the active session" disabled></textarea>
-<script>
-  const vs = acquireVsCodeApi();
-  const ta = document.getElementById('ta'), who = document.getElementById('who');
-  let sid = '', dirty = false, timer = null;
-  function flush() {
-    if (dirty && sid) { vs.postMessage({ cmd: 'save', sid, text: ta.value }); dirty = false; }
-  }
-  ta.addEventListener('input', () => { dirty = true; clearTimeout(timer); timer = setTimeout(flush, 600); });
-  ta.addEventListener('blur', flush);
-  window.addEventListener('message', ev => {
-    const m = ev.data;
-    if (m.type !== 'load') return;
-    who.textContent = m.label || '';
-    if (m.sameSid) return;         // just a label refresh — never clobber edits
-    flush();                       // switching sessions: persist the old one first
-    sid = m.sid || '';
-    ta.value = m.text || '';
-    dirty = false;
-    ta.disabled = !sid;
-  });
-</script></body></html>`;
-}
-
 class WheelProvider {
-  constructor() { this.view = null; this.timer = null; this.enrichTimer = null; this.state = null; this.notes = null; }
+  constructor() {
+    this.view = null; this.timer = null; this.enrichTimer = null; this.state = null;
+    this.notesSid = null;                 // sid whose notes the pane shows
+    this.notesSaving = Promise.resolve(); // serialized writes: switch can't outrun a save
+  }
 
   resolveWebviewView(view) {
     this.view = view;
+    this.notesSid = null;   // fresh webview needs a notes load
     view.webview.options = { enableScripts: true };
     view.webview.html = html();
     view.webview.onDidReceiveMessage(m => this.onMessage(m).catch(e => {
@@ -410,8 +327,9 @@ class WheelProvider {
       state = { ok: false, error: (r.stderr || r.stdout || 'hamster json failed').trim().slice(0, 300), windows: [] };
     }
     this.state = state;
+    state.ui = { detailed: !!cfg().get('detailedRows') };
     try { this.view.webview.postMessage({ type: 'state', state }); } catch (e) { /* view gone */ }
-    if (this.notes) this.notes.update(state);
+    await this.updateNotes(state);
     if (state.ok && cfg().get('workspaceFolders') === 'all') {
       ensureFolders((state.windows || []).map(w =>
         (w.primary && w.primary.path) || w.cwd));
@@ -421,11 +339,52 @@ class WheelProvider {
     this.view.badge = n ? { value: n, tooltip: `${c.attention || 0} need you · ${c.ready || 0} ready` } : undefined;
   }
 
+  async updateNotes(state) {
+    if (!this.view) return;
+    let sid = '', label = 'board offline';
+    if (state && state.ok) {
+      const w = (state.windows || []).find(x => x.active) || null;
+      if (w) {
+        sid = w.sid || '';
+        label = sid ? `${w.name} — ${sid.slice(0, 8)}` : `${w.name} — no session id yet`;
+      } else label = 'no active session';
+    }
+    if (sid === this.notesSid) {
+      try { this.view.webview.postMessage({ type: 'notesLoad', sid, label, sameSid: true }); } catch (e) { }
+      return;
+    }
+    let text = '';
+    if (sid) {
+      await this.notesSaving;   // an in-flight save for the old sid lands first
+      try { text = await fs.promises.readFile(path.join(NOTES, sid + '.md'), 'utf8'); }
+      catch (e) { text = ''; }
+    }
+    this.notesSid = sid;
+    try { this.view.webview.postMessage({ type: 'notesLoad', sid, label, text }); } catch (e) { }
+  }
+
   async onMessage(m) {
     const t = m.target;
     const T = t ? { HAMSTER_TARGET: t } : null;
     switch (m.cmd) {
       case 'refresh': break;
+      case 'notesSave': {
+        if (!m.sid) return;
+        this.notesSaving = this.notesSaving.then(async () => {
+          try {
+            await fs.promises.mkdir(NOTES, { recursive: true });
+            await fs.promises.writeFile(path.join(NOTES, m.sid + '.md'), m.text || '');
+          } catch (e) {
+            vscode.window.showErrorMessage('Hamster notes: ' + e.message);
+          }
+        });
+        return;
+      }
+      case 'toggleDetails': {
+        await vscode.workspace.getConfiguration('hamster')
+          .update('detailedRows', !cfg().get('detailedRows'), vscode.ConfigurationTarget.Global);
+        break;
+      }
       case 'attach': wheelTerminal(true); break;
       case 'openpr':
         if (m.url) vscode.env.openExternal(vscode.Uri.parse(m.url));
@@ -657,7 +616,19 @@ function html() {
 <html><head><meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline';">
 <style>
-  body { padding: 0; margin: 0; font-family: var(--vscode-font-family); color: var(--vscode-foreground); font-size: 12px; }
+  html, body { height: 100%; }
+  body { padding: 0; margin: 0; font-family: var(--vscode-font-family); color: var(--vscode-foreground); font-size: 12px;
+    display: flex; flex-direction: column; overflow: hidden; }
+  #list { flex: 1 1 auto; overflow-y: auto; }
+  #hdr, #err { flex: none; }
+  #notes { flex: none; height: 25%; min-height: 64px; display: flex; flex-direction: column;
+    border-top: 1px solid var(--vscode-sideBarSectionHeader-border, rgba(128,128,128,.25)); }
+  #notesDrag { height: 4px; cursor: ns-resize; flex: none; }
+  #notesDrag:hover { background: var(--vscode-focusBorder, rgba(128,128,128,.4)); }
+  #notesWho { flex: none; padding: 1px 8px; font-size: 10px; opacity: .6; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #notesTa { flex: 1; width: 100%; box-sizing: border-box; border: none; outline: none; resize: none;
+    background: transparent; color: var(--vscode-foreground); padding: 2px 8px;
+    font-family: var(--vscode-editor-font-family, monospace); font-size: 12px; }
   #hdr { position: sticky; top: 0; background: var(--vscode-sideBar-background); padding: 6px 8px; border-bottom: 1px solid var(--vscode-sideBarSectionHeader-border, rgba(128,128,128,.2)); z-index: 2; }
   #counts { opacity: .85; }
   #hbtns { display: flex; gap: 4px; margin-top: 5px; flex-wrap: wrap; }
@@ -684,7 +655,10 @@ function html() {
   .sub { flex-basis: 100%; padding-left: 20px; font-size: 10px; opacity: .6; display: flex; gap: 6px; }
   .subl { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .subr { flex: none; opacity: .8; }
-  .subx { flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 2px 4px; padding: 2px 8px 4px 20px; font-size: 10px; opacity: .75; }
+  .det { flex-basis: 100%; padding: 0 8px 3px 20px; font-size: 10px; opacity: .85; display: none; }
+  .row.showdet .det { display: block; }
+  .detline { display: flex; flex-wrap: wrap; gap: 2px 4px; align-items: center; margin-top: 2px; }
+  .detlab { opacity: .5; min-width: 56px; flex: none; }
   .c { border: 1px solid rgba(128,128,128,.35); border-radius: 3px; padding: 0 4px; cursor: pointer; white-space: nowrap; }
   .c:hover { background: var(--vscode-toolbar-hoverBackground, rgba(128,128,128,.25)); }
   .ticket { flex: none; font-size: 10px; opacity: .6; border: 1px solid rgba(128,128,128,.4); border-radius: 3px; padding: 0 3px; }
@@ -724,10 +698,16 @@ function html() {
   <button data-h="hidesnooze" id="hideChip" class="chip" title="Hide/show snoozed sessions (F8)"></button>
   <button data-h="lensState" id="lensState" class="chip">❗ needs-you</button>
   <button data-h="lensRecent" id="lensRecent" class="chip">🕐 recent</button>
+  <button data-h="toggleDetails" id="detChip" class="chip" title="Detailed rows: every row shows its Worktrees / PRs / Tickets / Artifacts lines (off = click a row's ▾ to expand it)">≣ details</button>
 </div>
 <input id="filt" placeholder="filter — name, ticket, branch (esc clears)" title="Type to filter the list; Esc clears"></div>
 <div id="list"></div>
 <div id="err" hidden></div>
+<div id="notes">
+  <div id="notesDrag" title="drag to resize"></div>
+  <div id="notesWho">…</div>
+  <textarea id="notesTa" placeholder="Notes for this session — autosaved, follows the active session" disabled></textarea>
+</div>
 <script>
   document.getElementById('counts').textContent = 'script alive — waiting for first poll…';
   window.onerror = (msg, src, line) => {
@@ -775,8 +755,9 @@ function html() {
       '<button data-a="pin" title="Pin / unpin — pinned sessions float above the a–z shelf (lenses override)">📌</button>' +
       '<button data-a="snooze" title="Snooze (hide) this session…">💤</button>' +
       '<button data-a="unsnooze" title="Unsnooze — back in the ready queue" hidden>⏰</button>' +
-    '</span><span class="meta"></span><span class="sub"></span><span class="subx" hidden></span>';
+    '</span><span class="meta"></span><span class="sub"></span><span class="det"></span>';
   const rowEls = new Map();   // target -> element, reused across polls
+  let detailedMode = false;   // from hamster.detailedRows via the state message
   const expandedRows = new Set();   // targets with the detail accordion open (ephemeral)
 
   function makeRow(t) {
@@ -846,13 +827,10 @@ function html() {
     el.querySelector('[data-a=snooze]').hidden = w.state === 'snoozed';
     el.querySelector('[data-a=unsnooze]').hidden = w.state !== 'snoozed';
     const allPrs = w.prs || [];
-    const openPrs = allPrs.filter(p => !p.state || p.state === 'open');
-    const donePrs = allPrs.filter(p => p.state && p.state !== 'open');
-    const prChip = (p, full) =>
+    const prChip = (p) =>
       '<span class="pr" data-url="' + esc(p.url || '') + '" title="'
       + esc((p.title ? p.title + ' — ' : '') + (p.url || 'PR')) + '">#'
-      + esc(String(p.number)) + (p.state ? ' ' + esc(p.state) : '')
-      + (full && p.branch ? ' ⎇ ' + esc(p.branch) : '') + '</span>';
+      + esc(String(p.number)) + (p.state ? ' ' + esc(p.state) : '') + '</span>';
     const prim = w.primary || { path: w.cwd, branch: w.branch, source: 'cwd' };
     const primBase = (prim.path || '').split('/').pop() || '';
     const primMark = prim.source === 'manual' ? '📍 ' : (prim.source === 'active' ? '≈ ' : '');
@@ -866,80 +844,86 @@ function html() {
       ? '<span class="c dirchip" data-p="' + esc(prim.path || '') + '" title="' + esc(primTitle) + '">'
         + primMark + esc(primBase) + (prim.branch ? ' ⎇ ' + esc(prim.branch) : '') + '</span>'
       : '';
-    const xp = expandedRows.has(w.target);
-    // worktrees this session is involved with (via its PRs' head branches),
-    // beyond the cwd it sits in — usually main with one feature worktree
     const wts = [];
-    for (const p of openPrs.concat(donePrs)) {
-      if (p.worktree && p.worktree !== w.cwd && p.worktree !== (w.primary && w.primary.path)
-          && !wts.some(x => x.path === p.worktree)) {
-        wts.push({ path: p.worktree, branch: p.branch || '' });
+    for (const pw of allPrs) {
+      if (pw.worktree && pw.worktree !== w.cwd && pw.worktree !== prim.path
+          && !wts.some(x => x.path === pw.worktree)) {
+        wts.push({ path: pw.worktree, branch: pw.branch || '' });
       }
     }
-    const wtChips = wts.slice(0, 2).map(x =>
-      '<span class="c dirchip" data-p="' + esc(x.path) + '" title="'
-      + esc(x.path) + ' — open in new window / reveal / copy">📁 '
-      + esc((x.path.split('/').pop() || x.branch).slice(0, 30)) + '</span>'
-    ).join(' ') + (wts.length > 2 ? ' <span class="c xpand" title="' + (wts.length - 2) + ' more worktrees — expand">+' + (wts.length - 2) + '📁</span>' : '');
-    // collapsed: one nowrap line — dir chip + open PRs (terminal fill to 3) + expander
-    const shownPrs = openPrs.concat(donePrs.slice(-(Math.max(0, 3 - openPrs.length))));
-    const hiddenN = allPrs.length - shownPrs.length;
     const arts = w.artifacts || [];
-    let subHtml;
-    if (!xp) {
-      subHtml = [dirChip, wtChips, shownPrs.map(p => prChip(p, false)).join(' ')].filter(Boolean).join(' ')
-        + (arts.length ? ' <span class="c xpand" title="' + arts.length + ' artifact(s) — expand to open">🔗' + arts.length + '</span>' : '')
-        + (hiddenN > 0 ? ' <span class="c xpand" title="Show all ' + allPrs.length + ' PRs, worktrees, tickets and artifacts">+' + hiddenN + ' ▾</span>' : '');
-    } else {
-      subHtml = [dirChip, '<span class="c xpand" title="Collapse">▴ collapse</span>'].filter(Boolean).join(' ');
-    }
-    subHtml = '<span class="subl">' + subHtml + '</span><span class="subr">' + esc(procTxt) + '</span>';
+    const detline = (lab, chips) => chips
+      ? '<span class="detline"><span class="detlab">' + lab + '</span>' + chips + '</span>' : '';
+    const detHtml =
+      detline('Worktrees:', wts.map(x =>
+        '<span class="c dirchip" data-p="' + esc(x.path) + '" title="' + esc(x.path)
+        + ' — open in new window / reveal / copy">📁 ' + esc((x.path.split('/').pop() || x.branch).slice(0, 34)) + '</span>').join(''))
+      + detline('PRs:', allPrs.map(prChip).join(''))
+      + detline('Tickets:', (w.tickets || []).map(tk =>
+        '<span class="c tkchip" data-k="' + esc(tk) + '" title="Open ' + esc(tk) + ' in Jira">' + esc(tk) + '</span>').join(''))
+      + detline('Artifacts:', arts.map(a => {
+          const nameA = a.label || (a.path ? a.path.split('/').pop() : '') || (a.url ? a.url.split('/').pop().slice(0, 8) : 'artifact');
+          return '<span class="c artchip" data-u="' + esc(a.url || '') + '" data-p="' + esc(a.path || '')
+            + '" title="' + esc([a.url, a.path].filter(Boolean).join('\\n')) + '">🔗 ' + esc(nameA.slice(0, 34)) + '</span>';
+        }).join(''));
+    const hasDet = !!detHtml;
+    const xp = detailedMode || expandedRows.has(w.target);
+    const expander = (!detailedMode && hasDet)
+      ? ' <span class="c xpand" title="' + (expandedRows.has(w.target) ? 'Collapse' : 'Show Worktrees / PRs / Tickets / Artifacts') + '">'
+        + (expandedRows.has(w.target) ? '▴' : '▾') + '</span>'
+      : '';
+    const subHtml = '<span class="subl">' + dirChip + expander + '</span><span class="subr">' + esc(procTxt) + '</span>';
     if (el._sub !== subHtml) { el.querySelector('.sub').innerHTML = subHtml; el._sub = subHtml; }
-    // expanded: wrapped block — every PR (worktree chip when checked out) + ticket chips
-    let subxHtml = '';
-    if (xp) {
-      const bits = [];
-      for (const p of allPrs) {
-        bits.push(prChip(p, true));
-        if (p.worktree) {
-          bits.push('<span class="c dirchip" data-p="' + esc(p.worktree) + '" title="'
-            + esc(p.worktree) + ' — open in new window / reveal / copy">📁 '
-            + esc((p.branch || '').slice(0, 34) || 'worktree') + '</span>');
-        }
-      }
-      for (const tk of (w.tickets || [])) {
-        bits.push('<span class="c tkchip" data-k="' + esc(tk) + '" title="Open ' + esc(tk) + ' in Jira">' + esc(tk) + '</span>');
-      }
-      for (const a of arts) {
-        const nameA = a.label || (a.path ? a.path.split('/').pop() : '') || (a.url ? a.url.split('/').pop().slice(0, 8) : 'artifact');
-        bits.push('<span class="c artchip" data-u="' + esc(a.url || '') + '" data-p="' + esc(a.path || '')
-          + '" title="' + esc([a.url, a.path].filter(Boolean).join('\\n')) + '">🔗 ' + esc(nameA.slice(0, 34)) + '</span>');
-      }
-      subxHtml = bits.join('');
-    }
-    const subxEl = el.querySelector('.subx');
-    subxEl.hidden = !xp;
-    if (el._subx !== subxHtml) { subxEl.innerHTML = subxHtml; el._subx = subxHtml; }
+    el.classList.toggle('showdet', xp && hasDet);
+    if (el._det !== detHtml) { el.querySelector('.det').innerHTML = detHtml; el._det = detHtml; }
     const tipLines = [w.target + (w.sid ? '  ' + w.sid.slice(0, 8) : ''),
                       w.cwd + (w.branch ? '  ⎇ ' + w.branch : ''),
                       (w.proc && w.proc.alive)
                         ? 'pid ' + w.proc.pid + ' · ' + Math.round(w.proc.rss_kb / 1024) + 'MB · ' + w.proc.cpu + '% cpu'
                         : 'process off — Restart Claude Process (right-click) wakes it'];
-    const tipPrs = openPrs.concat(donePrs.slice(-(Math.max(0, 8 - openPrs.length))));
-    for (const p of tipPrs) {
-      if (p.url) tipLines.push('#' + p.number + (p.state ? ' ' + p.state : '') + '  ' + p.url);
+    for (const pr of allPrs.slice(0, 8)) {
+      if (pr.url) tipLines.push('#' + pr.number + (pr.state ? ' ' + pr.state : '') + '  ' + pr.url);
     }
-    if (allPrs.length > tipPrs.length) tipLines.push('… +' + (allPrs.length - tipPrs.length) + ' more PRs');
+    if (allPrs.length > 8) tipLines.push('… +' + (allPrs.length - 8) + ' more PRs');
     tipLines.push('', w.last_text || '', '', 'right-click for actions');
     const tip = tipLines.join('\\n');
     if (el._tip !== tip) { el.title = tip; el._tip = tip; }
     el._w = { state: w.state, subagents: w.subagents };
   }
 
+  // ── notes pane (bottom 25%, drag-resizable) ──
+  const nTa = document.getElementById('notesTa'), nWho = document.getElementById('notesWho');
+  let nSid = '', nDirty = false, nTimer = null;
+  function nFlush() {
+    if (nDirty && nSid) { vs.postMessage({ cmd: 'notesSave', sid: nSid, text: nTa.value }); nDirty = false; }
+  }
+  nTa.addEventListener('input', () => { nDirty = true; clearTimeout(nTimer); nTimer = setTimeout(nFlush, 600); });
+  nTa.addEventListener('blur', nFlush);
+  const nPane = document.getElementById('notes');
+  document.getElementById('notesDrag').addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    const startY = e.clientY, startH = nPane.offsetHeight;
+    const move = (ev) => { nPane.style.height = Math.max(64, startH + (startY - ev.clientY)) + 'px'; };
+    const up = () => { document.removeEventListener('mousemove', move); document.removeEventListener('mouseup', up); };
+    document.addEventListener('mousemove', move);
+    document.addEventListener('mouseup', up);
+  });
+
   window.addEventListener('message', ev => {
-    if (ev.data.type !== 'state') return;
-    lastState = ev.data.state;
-    render(lastState);
+    const m = ev.data;
+    if (m.type === 'state') {
+      lastState = m.state;
+      detailedMode = !!(m.state.ui && m.state.ui.detailed);
+      render(lastState);
+    } else if (m.type === 'notesLoad') {
+      nWho.textContent = m.label || '';
+      if (m.sameSid) return;       // label refresh only — never clobber edits
+      nFlush();                    // switching sessions: persist the old one first
+      nSid = m.sid || '';
+      nTa.value = m.text || '';
+      nDirty = false;
+      nTa.disabled = !nSid;
+    }
   });
 
   function render(st) {
@@ -973,6 +957,7 @@ function html() {
     lensR.title = prefs.lens === 'recent'
       ? 'Lens on: most recent activity first — click to return to the a–z shelf'
       : 'Lens: most recent activity first';
+    document.getElementById('detChip').classList.toggle('on', detailedMode);
 
     let rows = (st.windows || []).filter(w => !(st.hidesnooze && w.state === 'snoozed' && !w.active));
     if (filt) {
@@ -1063,8 +1048,6 @@ async function cmdMenu(provider) {
 
 function activate(context) {
   const provider = new WheelProvider();
-  const notes = new NotesProvider();
-  provider.notes = notes;
   setupDone = ensureSetup(context);
   setupDone.then(() => maybeOfferFkeys(context));
   // row context-menu commands receive the row's data-vscode-context object
@@ -1089,9 +1072,8 @@ function activate(context) {
     provider.tick();
   };
   context.subscriptions.push(
-    vscode.window.registerWebviewViewProvider('hamsterWheel', provider),
-    vscode.window.registerWebviewViewProvider('hamsterNotes', notes, {
-      webviewOptions: { retainContextWhenHidden: true },   // keep unsaved text alive while collapsed
+    vscode.window.registerWebviewViewProvider('hamsterWheel', provider, {
+      webviewOptions: { retainContextWhenHidden: true },   // keep notes drafts alive while hidden
     }),
     vscode.commands.registerCommand('hamster.refresh', () => provider.tick()),
     vscode.commands.registerCommand('hamster.attach', () => wheelTerminal(true)),
