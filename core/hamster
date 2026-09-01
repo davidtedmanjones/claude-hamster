@@ -5,7 +5,11 @@
 # sidebar), it just keeps the board honest. tmux keeps every session's full
 # history alive independent of any editor. Non-tmux Claude sessions self-skip.
 set -uo pipefail
-HDIR="$HOME/.claude/hamster"; mkdir -p "$HDIR"
+# overridable for hermetic tests (scripts/test.sh): state dir, transcript dir,
+# and an isolated tmux server socket so tests never touch the real board
+HDIR="${HAMSTER_DIR:-$HOME/.claude/hamster}"; mkdir -p "$HDIR"
+PROJ="${HAMSTER_PROJECTS:-$HOME/.claude/projects}"
+tmux(){ command tmux ${HAMSTER_SOCKET:+-L "$HAMSTER_SOCKET"} "$@"; }
 SRC="${BASH_SOURCE[0]}"; [ -L "$SRC" ] && SRC="$(readlink "$SRC")"  # resolve the ~/.local/bin symlink to the repo
 HERE="$(cd "$(dirname "$SRC")" && pwd)"
 SELF="$HERE/hamster"
@@ -35,7 +39,7 @@ try:
 except Exception: pass"; }
 
 title_for(){  # sid cwd -> short human label (user alias > latest ai-title > 1st prompt)
-  python3 - "$1" "$2" "$HOME/.claude/projects" <<'PY'
+  python3 - "$1" "$2" "$PROJ" <<'PY'
 import json,sys,os,glob,re
 sid,cwd,proj=sys.argv[1],sys.argv[2],sys.argv[3]
 try:  # resurrect-names.json = the one user-given name store, shared with resurrect
@@ -262,7 +266,7 @@ PY
 )
     sid="${meta%%$'\t'*}"; cwd="${meta#*$'\t'}"
     [ -z "$sid" ] && { tmux display-message "Hamster: no session id for this window yet"; exit 0; }
-    excerpt=$(SID="$sid" CWD="$cwd" python3 - "$HOME/.claude/projects" <<'PY'
+    excerpt=$(SID="$sid" CWD="$cwd" python3 - "$PROJ" <<'PY'
 import json,os,sys,glob,re
 sid=os.environ["SID"]; cwd=os.environ["CWD"]; proj=sys.argv[1]
 enc=lambda s: re.sub(r"[/.]","-",s)
@@ -393,7 +397,7 @@ PY
     f=$(kf "$t")
     [ -f "$f" ] || { tmux display-message "Hamster: not on the wheel" 2>/dev/null; exit 0; }
     python3 - "$f" <<'PY'
-import json,sys
+import json,os,sys
 f=sys.argv[1]
 try: d=json.load(open(f))
 except Exception: sys.exit(0)
@@ -422,9 +426,10 @@ except Exception: d={}
 if v=="clear":
     d.pop(sid,None); print("primary cleared")
 else:
+    import time
     p=os.path.abspath(os.path.expanduser(v))
     if not os.path.isdir(p): print("warning: %s is not a directory (recorded anyway)"%p)
-    d[sid]=p; print("primary: %s"%p)
+    d[sid]={"path":p,"at":time.time()}; print("primary: %s"%p)
 tmp=f+".tmp"; json.dump(d,open(tmp,"w")); os.replace(tmp,f)
 PY
     ;;
@@ -575,7 +580,7 @@ PY
     fi
     ;;
   json)  # wheel roster as JSON for external UIs (VS Code sidebar); read-only
-    exec python3 "$HERE/wheelstate.py" "$HDIR" "$HOME/.claude/projects" "$TS"
+    exec python3 "$HERE/wheelstate.py" "$HDIR" "$PROJ" "$TS"
     ;;
   enrich)  # refresh the PR cache for wheel branches via gh — slow rail, run in background
     exec python3 "$HERE/enrich.py" "$HDIR"
@@ -608,7 +613,7 @@ print("\n%d ready, %d snoozed, %d working"%(ready,snoozed,work))
 PY
     ;;
   statusline)  # status-right summary + reconcile state from transcripts + advance spinner (~1s)
-    python3 - "$HDIR" "$HOME/.claude/projects" "$TS" <<'PY'
+    python3 - "$HDIR" "$PROJ" "$TS" <<'PY'
 import json,sys,os,glob,datetime,re,time,subprocess
 hdir,proj=sys.argv[1],sys.argv[2]; ts=sys.argv[3] if len(sys.argv)>3 else "hamster"
 now=datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None); nowts=time.time()
@@ -667,9 +672,10 @@ frames="◐◓◑◒"
 # changed. The previous version rewrote ~40 options every second from inside the
 # status #(), and each set triggered a status redraw — that storm desynced/blanked
 # the terminal. Diffing keeps the line silent when nothing is happening.
+TM=(["tmux","-L",os.environ["HAMSTER_SOCKET"]] if os.environ.get("HAMSTER_SOCKET") else ["tmux"])
 wopt={}
 try:
-    o=subprocess.run(["tmux","list-windows","-a","-F",
+    o=subprocess.run(TM+["list-windows","-a","-F",
         "#{session_name}:#{window_index}\t#{@hamster_state}\t#{@hamster_sub}"],
         capture_output=True,text=True).stdout
     for ln in o.splitlines():
@@ -678,9 +684,9 @@ try:
 except Exception: pass
 act_tgt=""; cact=0.0
 try:
-    act_tgt=subprocess.run(["tmux","display-message","-p","-t",ts,
+    act_tgt=subprocess.run(TM+["display-message","-p","-t",ts,
         "#{session_name}:#{window_index}"],capture_output=True,text=True).stdout.strip()
-    o=subprocess.run(["tmux","list-clients","-t",ts,"-F","#{client_activity}"],
+    o=subprocess.run(TM+["list-clients","-t",ts,"-F","#{client_activity}"],
         capture_output=True,text=True).stdout
     cact=max((float(x) for x in o.split() if x),default=0.0)
 except Exception: pass
@@ -732,7 +738,7 @@ if ops:
     for i,o in enumerate(ops):
         if i: flat.append(";")
         flat+=o
-    try: subprocess.run(["tmux",*flat],stderr=subprocess.DEVNULL,stdout=subprocess.DEVNULL)
+    try: subprocess.run([*TM,*flat],stderr=subprocess.DEVNULL,stdout=subprocess.DEVNULL)
     except Exception: pass
 parts=["%d sess"%total,"%d ready"%ready,"%d working"%working,"%d snoozed"%snoozed]
 if attn: parts.insert(1,"%d need-you"%attn)
@@ -846,7 +852,7 @@ PYB
     tmux has-session -t "$TS" 2>/dev/null || tmux new-session -d -s "$TS"
     livemap=$(tmux list-windows -t "$TS" -F '#{session_name}:#{window_index}	#{@hamster_sid}' 2>/dev/null)
     plan="$(mktemp -t hamster-heal.XXXXXX)"
-    LIVEMAP="$livemap" python3 - "$HDIR" "$HOME/.claude/projects" "$plan" <<'PY'
+    LIVEMAP="$livemap" python3 - "$HDIR" "$PROJ" "$plan" <<'PY'
 import json,os,sys,glob,time,datetime,shutil
 hdir,proj,plan=sys.argv[1],sys.argv[2],sys.argv[3]
 live_t={}; live_sids=set()

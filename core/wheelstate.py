@@ -18,6 +18,11 @@ SKIP_FILES = {"wheel-snapshot.json", "heal-deferred.json", "pr-cache.json",
               "pins.json", "worktrees.json"}
 
 
+def tmux_cmd():
+    s = os.environ.get("HAMSTER_SOCKET")
+    return ["tmux", "-L", s] if s else ["tmux"]
+
+
 def parse_ts(t):
     try:
         return datetime.datetime.fromisoformat((t or "").replace("Z", ""))
@@ -60,16 +65,29 @@ def probe(proj, sid, cwd, nowts):
     # the caller picks the first repo-relevant one, so end-of-turn memory
     # writes and /tmp scratch can't shadow the real operating worktree
     last_files = []
-    for m in re.finditer(r'"file_path":"((?:[^"\\]|\\.)*)"', data):
-        v = m.group(1)
-        if v:
-            last_files.append(v)
+    ts_re = re.compile(r'"timestamp":\s*"([^"]+)"')
+    fp_re = re.compile(r'"file_path":\s*"((?:[^"\\]|\\.)*)"')
+    for line in data.split("\n"):
+        fps = fp_re.findall(line)
+        if not fps:
+            continue
+        lts = 0.0
+        tm = ts_re.search(line)
+        if tm:
+            try:
+                lts = datetime.datetime.fromisoformat(
+                    tm.group(1).replace("Z", "+00:00")).timestamp()
+            except Exception:
+                lts = 0.0
+        for v in fps:
+            if v:
+                last_files.append((v, lts))
     seen_f = set()
     ordered = []
-    for v in reversed(last_files):
+    for v, lts in reversed(last_files):
         if v not in seen_f:
             seen_f.add(v)
-            ordered.append(v)
+            ordered.append((v, lts))
     last_files = ordered[:20]
     act = mid = None
     last_text = ""
@@ -202,6 +220,127 @@ def agents_live(proj, sid, cwd, nowts):
     return n
 
 
+def load_prcache(hdir):
+    """{'branches': {...}, 'urls': {...}}; a legacy flat file reads as branches."""
+    try:
+        prcache = json.load(open(os.path.join(hdir, "pr-cache.json")))
+    except Exception:
+        prcache = {}
+    branches = prcache.get("branches",
+                           prcache if "urls" not in prcache else {})
+    return branches, prcache.get("urls", {})
+
+
+def prs_for(hdir, sid, branch, root, branch_prs, url_prs):
+    """All of this session's PRs: current branch's PR (enrich cache, keyed
+    repo::branch so same-named branches in different repos never cross)
+    first, then every PR the session itself created (facts hook — gh pr
+    create output only, so passing mentions never land here), oldest first."""
+    out = []
+    seen = set()
+
+    def add(number, url, state, title, head):
+        if not number or url in seen:
+            return
+        seen.add(url)
+        out.append({"number": number, "url": url, "state": state,
+                    "title": title, "branch": head})
+
+    c = branch_prs.get(root + "::" + branch) or branch_prs.get(branch)
+    if c and c.get("number"):
+        add(c["number"], c.get("url", ""), c.get("state", ""),
+            c.get("title", ""), c.get("branch", branch))
+    if sid:
+        try:
+            fx = json.load(open(os.path.join(hdir, "facts", sid + ".json")))
+        except Exception:
+            fx = {}
+        for u, _ts in sorted((fx.get("prs") or {}).items(),
+                             key=lambda kv: kv[1]):
+            try:
+                e = url_prs.get(u) or {}
+                add(e.get("number") or int(u.rsplit("/", 1)[1]), u,
+                    e.get("state", ""), e.get("title", ""),
+                    e.get("branch", ""))
+            except Exception:
+                continue   # one malformed URL never drops the rest
+    return out
+
+
+def tickets_of(branch, prs):
+    """Ordered by relevance: current branch's ticket, then tickets of open
+    PRs, then the rest most-recent-first."""
+    ordered = []
+
+    def add_from(s):
+        # two+ letter project key, two+ digits: matches JIRA-style keys
+        # without eating things like utf-8 or x-1
+        for m in re.findall(r"(?i)\b([a-z][a-z0-9]{1,9})-(\d{2,6})\b",
+                            s or ""):
+            t = "%s-%d" % (m[0].upper(), int(m[1]))
+            if t not in ordered:
+                ordered.append(t)
+
+    add_from(branch)
+    for p in prs:
+        if not p.get("state") or p["state"] == "open":
+            add_from(p.get("title", ""))
+    for p in reversed(prs):
+        add_from(p.get("title", ""))
+    return ordered
+
+
+def artifacts_of(hdir, sid):
+    if not sid:
+        return []
+    try:
+        a = json.load(open(os.path.join(hdir, "artifacts", sid + ".json")))
+        return a.get("artifacts") or []
+    except Exception:
+        return []
+
+
+def primary_of(primaries, sid, cwd, root, last_files):
+    """A badge click pins (manual); the agent working in a DIFFERENT
+    worktree after the pin un-pins it (activity supersedes an older
+    manual). Precedence: newest of {pin, activity} > cwd. Stale tail
+    files can't override a fresh pin — the deciding file's own entry
+    timestamp must postdate the pin, not merely sit in the tail."""
+    manual = primaries.get(sid)
+    m_path, m_at = "", 0.0
+    if isinstance(manual, dict):
+        m_path = manual.get("path") or ""
+        m_at = manual.get("at") or 0.0
+    elif manual:
+        m_path = manual   # pre-timestamp pin: any newer activity wins
+    guess = None
+    if root:
+        cands = list(worktrees_of(root).values()) + [root]
+        for lf, lts in last_files:  # most recent repo-relevant file decides
+            best = ""
+            for c in cands:
+                if lf.startswith(c.rstrip("/") + "/") and len(c) > len(best):
+                    best = c
+            if not best:
+                continue
+            if os.path.realpath(best) == os.path.realpath(cwd or "") \
+                    and not m_path:
+                break   # recent work genuinely in the cwd checkout
+            guess = {"path": best, "branch": branch_of(best),
+                     "source": "active", "at": lts}
+            break
+    if m_path:
+        if guess and guess["at"] > m_at and \
+                os.path.realpath(guess["path"]) != os.path.realpath(m_path):
+            return {k: guess[k] for k in ("path", "branch", "source")}
+        return {"path": m_path, "branch": branch_of(m_path),
+                "source": "manual"}
+    if guess and os.path.realpath(guess["path"]) != \
+            os.path.realpath(cwd or ""):
+        return {k: guess[k] for k in ("path", "branch", "source")}
+    return {"path": cwd, "branch": branch_of(cwd), "source": "cwd"}
+
+
 def main():
     hdir = sys.argv[1]
     proj = sys.argv[2]
@@ -214,7 +353,7 @@ def main():
     panes = {}   # target -> (pane_pid, pane_dead)
     try:
         out = subprocess.run(
-            ["tmux", "list-windows", "-t", ts, "-F",
+            tmux_cmd() + ["list-windows", "-t", ts, "-F",
              "#{session_name}:#{window_index}\t#{window_name}\t#{window_active}"
              "\t#{pane_pid}\t#{pane_dead}"],
             capture_output=True, text=True, timeout=5).stdout
@@ -261,83 +400,7 @@ def main():
                           "session": ts, "windows": []}))
         return 0
 
-    try:
-        prcache = json.load(open(os.path.join(hdir, "pr-cache.json")))
-    except Exception:
-        prcache = {}
-    # cache shape: {"branches": {branch: pr}, "urls": {url: pr}}; a legacy
-    # flat {branch: pr} file reads as branches
-    branch_prs = prcache.get("branches",
-                             prcache if "urls" not in prcache else {})
-    url_prs = prcache.get("urls", {})
-
-    def prs_for(sid, branch, root):
-        """All of this session's PRs: current branch's PR (enrich cache,
-        keyed repo::branch so same-named branches in different repos never
-        cross) first, then every PR the session itself created (facts hook —
-        gh pr create output only, so passing mentions never land here),
-        oldest first. States/titles backfilled from the url cache."""
-        out = []
-        seen = set()
-
-        def add(number, url, state, title, head):
-            if not number or url in seen:
-                return
-            seen.add(url)
-            out.append({"number": number, "url": url, "state": state,
-                        "title": title, "branch": head})
-
-        c = branch_prs.get(root + "::" + branch) or branch_prs.get(branch)
-        if c and c.get("number"):
-            add(c["number"], c.get("url", ""), c.get("state", ""),
-                c.get("title", ""), c.get("branch", branch))
-        if sid:
-            try:
-                fx = json.load(open(os.path.join(
-                    hdir, "facts", sid + ".json")))
-            except Exception:
-                fx = {}
-            for u, _ts in sorted((fx.get("prs") or {}).items(),
-                                 key=lambda kv: kv[1]):
-                try:
-                    e = url_prs.get(u) or {}
-                    add(e.get("number") or int(u.rsplit("/", 1)[1]), u,
-                        e.get("state", ""), e.get("title", ""),
-                        e.get("branch", ""))
-                except Exception:
-                    continue   # one malformed URL never drops the rest
-        return out
-
-    def artifacts_of(sid):
-        if not sid:
-            return []
-        try:
-            a = json.load(open(os.path.join(hdir, "artifacts", sid + ".json")))
-            return a.get("artifacts") or []
-        except Exception:
-            return []
-
-    def tickets_of(branch, prs):
-        """Ordered by relevance: current branch's ticket, then tickets of
-        open PRs, then the rest most-recent-first."""
-        ordered = []
-
-        def add_from(s):
-            # two+ letter project key, two+ digits: matches JIRA-style keys
-            # without eating things like utf-8 or x-1
-            for m in re.findall(r"(?i)\b([a-z][a-z0-9]{1,9})-(\d{2,6})\b",
-                                s or ""):
-                t = "%s-%d" % (m[0].upper(), int(m[1]))
-                if t not in ordered:
-                    ordered.append(t)
-
-        add_from(branch)
-        for p in prs:
-            if not p.get("state") or p["state"] == "open":
-                add_from(p.get("title", ""))
-        for p in reversed(prs):
-            add_from(p.get("title", ""))
-        return ordered
+    branch_prs, url_prs = load_prcache(hdir)
 
     state = {}
     for f in glob.glob(os.path.join(hdir, "*.json")):
@@ -359,29 +422,9 @@ def main():
     except Exception:
         primaries = {}
 
-    def primary_of(sid, cwd, root, last_files):
-        manual = primaries.get(sid)
-        if manual:
-            return {"path": manual, "branch": branch_of(manual),
-                    "source": "manual"}
-        if root:
-            cands = list(worktrees_of(root).values()) + [root]
-            for lf in last_files:   # most recent repo-relevant file decides
-                best = ""
-                for c in cands:
-                    if lf.startswith(c.rstrip("/") + "/") and len(c) > len(best):
-                        best = c
-                if not best:
-                    continue
-                if os.path.realpath(best) == os.path.realpath(cwd or ""):
-                    break   # recent work genuinely in the cwd checkout
-                return {"path": best, "branch": branch_of(best),
-                        "source": "active"}
-        return {"path": cwd, "branch": branch_of(cwd), "source": "cwd"}
-
     hidesnooze = False
     try:
-        o = subprocess.run(["tmux", "show-option", "-gv", "@hamster_hidesnooze"],
+        o = subprocess.run(tmux_cmd() + ["show-option", "-gv", "@hamster_hidesnooze"],
                            capture_output=True, text=True, timeout=5).stdout
         hidesnooze = o.strip() == "1"
     except Exception:
@@ -436,8 +479,8 @@ def main():
             waiting = max(int((now - ra).total_seconds()), 0)
         br = branch_of(cwd)
         root = repo_root(cwd)
-        prs = prs_for(sid, br, root)
-        primary = primary_of(sid, cwd, root, last_files)
+        prs = prs_for(hdir, sid, br, root, branch_prs, url_prs)
+        primary = primary_of(primaries, sid, cwd, root, last_files)
         wt = worktrees_of(root)
         for p_ in prs:
             hb = p_.get("branch") or ""
@@ -449,7 +492,7 @@ def main():
                     "branch": br, "prs": prs,
                     "primary": primary,
                     "tickets": tickets_of(br, prs),
-                    "artifacts": artifacts_of(sid),
+                    "artifacts": artifacts_of(hdir, sid),
                     "pin": sid in pins,
                     "pinned": bool(d.get("pinned_name")),
                     "last_text": last_text, "last_mtime": mtime,
