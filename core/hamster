@@ -403,6 +403,31 @@ PY
     tmux set-option -w -t "$t" @hamster_state ready 2>/dev/null
     tmux display-message "Hamster: unsnoozed" 2>/dev/null
     ;;
+  primary)  # set/clear this session's primary worktree — the sidebar leads with it
+    t=$(cur_target); [ -z "$t" ] && exit 0
+    sid=$(python3 - "$(kf "$t")" <<'PY'
+import json,sys
+try: print(json.load(open(sys.argv[1])).get("session_id") or "")
+except Exception: print("")
+PY
+)
+    [ -z "$sid" ] && { echo "no session id for this window yet"; exit 1; }
+    val="${2:-}"
+    [ -z "$val" ] && { echo "usage: hamster primary <path|clear>"; exit 1; }
+    HP_SID="$sid" HP_VAL="$val" python3 - "$HDIR/worktrees.json" <<'PY'
+import json,os,sys
+f=sys.argv[1]; sid=os.environ["HP_SID"]; v=os.environ["HP_VAL"]
+try: d=json.load(open(f))
+except Exception: d={}
+if v=="clear":
+    d.pop(sid,None); print("primary cleared")
+else:
+    p=os.path.abspath(os.path.expanduser(v))
+    if not os.path.isdir(p): print("warning: %s is not a directory (recorded anyway)"%p)
+    d[sid]=p; print("primary: %s"%p)
+tmp=f+".tmp"; json.dump(d,open(tmp,"w")); os.replace(tmp,f)
+PY
+    ;;
   pin)  # toggle pin-to-top for the current window's session — sid-keyed so it
     # survives restarts/re-adopts; the VS Code sidebar floats pinned sessions
     # above the alphabetical shelf (lenses override while engaged)
@@ -564,7 +589,7 @@ def p(t):
     try: return datetime.datetime.fromisoformat((t or "").replace("Z",""))
     except: return None
 rows=[]
-SKIP={"wheel-snapshot.json","heal-deferred.json","pr-cache.json","pins.json"}
+SKIP={"wheel-snapshot.json","heal-deferred.json","pr-cache.json","pins.json","worktrees.json"}
 for fp in glob.glob(os.path.join(hdir,"*.json")):
     if os.path.basename(fp) in SKIP: continue
     try: rows.append(json.load(open(fp)))
@@ -661,7 +686,7 @@ try:
 except Exception: pass
 ops=[]
 total=ready=snoozed=working=attn=0
-SKIP={"wheel-snapshot.json","heal-deferred.json","pr-cache.json","pins.json"}
+SKIP={"wheel-snapshot.json","heal-deferred.json","pr-cache.json","pins.json","worktrees.json"}
 for fp in glob.glob(os.path.join(hdir,"*.json")):
     if os.path.basename(fp) in SKIP: continue
     try: d=json.load(open(fp))
@@ -848,7 +873,7 @@ if os.path.exists(deferred):
 # union: snapshot first (has display names), then orphaned per-window files —
 # dedup below is order-sensitive, so snapshot entries win for duplicated sids
 for f in glob.glob(os.path.join(hdir,"*.json")):
-    if os.path.basename(f) in ("wheel-snapshot.json","heal-deferred.json","pr-cache.json","pins.json"): continue
+    if os.path.basename(f) in ("wheel-snapshot.json","heal-deferred.json","pr-cache.json","pins.json","worktrees.json"): continue
     try: d=json.load(open(f))
     except Exception: continue
     tgt=d.get("target",""); sid=d.get("session_id","") or ""
@@ -944,6 +969,8 @@ Hamster — track tmux-hosted Claude sessions; you direct attention, it keeps th
   hamster hidesnooze         toggle whether snoozed sessions show (F8; VS Code sidebar follows)
   hamster rename <name>      hardcode (pin) the current window's name — auto-relabel skips it
   hamster pin                toggle pin-to-top for the current session (sidebar shelf floats it)
+  hamster primary <path|clear>  set the session's primary worktree (sidebar leads with it;
+                             unset = auto-guess from the latest file the session touched)
   hamster artifact add <url|path> [label]  record a link/file artifact for the current session
   hamster artifact list|rm <i>  list / remove them (Artifact-tool publishes auto-captured by hook)
   hamster hibernate          stop the current session's claude but keep the window — frees

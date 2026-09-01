@@ -488,6 +488,34 @@ class WheelProvider {
         await hamster(['hibernate'], T);
         break;
       }
+      case 'setprimary': {
+        const st = this.state && this.state.ok ? this.state : await getState();
+        const row = st && (st.windows || []).find(x => x.target === t);
+        const opts = [];
+        if (row) {
+          const add = (p, why) => {
+            if (p && !opts.some(o => o.path === p)) opts.push({ label: '$(folder) ' + p.split('/').pop(), description: why, path: p });
+          };
+          add(row.cwd, 'session cwd');
+          if (row.primary && row.primary.source !== 'manual') add(row.primary.path, row.primary.source === 'active' ? 'guessed active' : '');
+          for (const pr of (row.prs || [])) add(pr.worktree, pr.branch ? '⎇ ' + pr.branch : '');
+        }
+        opts.push({ label: '$(edit) Enter a path…', path: '__ask__' });
+        if (row && row.primary && row.primary.source === 'manual') {
+          opts.push({ label: '$(discard) Clear override (back to auto-guess)', path: '__clear__' });
+        }
+        const pick = await vscode.window.showQuickPick(opts, { placeHolder: 'Primary worktree for ' + (m.name || t) });
+        if (!pick) break;
+        let val = pick.path;
+        if (val === '__ask__') {
+          val = await vscode.window.showInputBox({ prompt: 'Worktree path', ignoreFocusOut: true });
+          if (!val) break;
+        }
+        if (val === '__clear__') val = 'clear';
+        const r = await hamster(['primary', val], T);
+        if (r.stdout.trim()) vscode.window.showInformationMessage('Hamster: ' + r.stdout.trim().split('\n').pop());
+        break;
+      }
       case 'restart': {
         const yes = await vscode.window.showWarningMessage(
           `Restart claude for "${m.name || t}"? Resumes the same session in a fresh process.`,
@@ -787,17 +815,26 @@ function html() {
       + esc((p.title ? p.title + ' — ' : '') + (p.url || 'PR')) + '">#'
       + esc(String(p.number)) + (p.state ? ' ' + esc(p.state) : '')
       + (full && p.branch ? ' ⎇ ' + esc(p.branch) : '') + '</span>';
-    const dirChip = (w.base || w.branch)
-      ? '<span class="c dirchip" data-p="' + esc(w.cwd || '') + '" title="'
-        + esc(w.cwd || '') + ' — open in new window / reveal / copy">'
-        + esc(w.base || '') + (w.branch ? ' ⎇ ' + esc(w.branch) : '') + '</span>'
+    const prim = w.primary || { path: w.cwd, branch: w.branch, source: 'cwd' };
+    const primBase = (prim.path || '').split('/').pop() || '';
+    const primMark = prim.source === 'manual' ? '📍 ' : (prim.source === 'active' ? '≈ ' : '');
+    const primTitle = (prim.source === 'manual' ? 'primary worktree (set manually)'
+                      : prim.source === 'active' ? 'active worktree (guessed from the latest repo file this session touched)'
+                      : 'session cwd')
+      + '\n' + (prim.path || '')
+      + (prim.path !== w.cwd ? '\nspawned in: ' + (w.cwd || '') : '')
+      + '\nopen in new window / reveal / copy';
+    const dirChip = (primBase || prim.branch)
+      ? '<span class="c dirchip" data-p="' + esc(prim.path || '') + '" title="' + esc(primTitle) + '">'
+        + primMark + esc(primBase) + (prim.branch ? ' ⎇ ' + esc(prim.branch) : '') + '</span>'
       : '';
     const xp = expandedRows.has(w.target);
     // worktrees this session is involved with (via its PRs' head branches),
     // beyond the cwd it sits in — usually main with one feature worktree
     const wts = [];
     for (const p of openPrs.concat(donePrs)) {
-      if (p.worktree && p.worktree !== w.cwd && !wts.some(x => x.path === p.worktree)) {
+      if (p.worktree && p.worktree !== w.cwd && p.worktree !== (w.primary && w.primary.path)
+          && !wts.some(x => x.path === p.worktree)) {
         wts.push({ path: p.worktree, branch: p.branch || '' });
       }
     }
@@ -995,7 +1032,7 @@ function activate(context) {
     provider.onMessage({ cmd: act, target: ctx && ctx.target, name: ctx && ctx.name,
                          working: !!(ctx && ctx.hamsterWorking) });
   for (const act of ['pin', 'snooze', 'unsnooze', 'rename', 'ainame',
-                     'addartifact', 'hibernate', 'restart', 'close']) {
+                     'addartifact', 'setprimary', 'hibernate', 'restart', 'close']) {
     context.subscriptions.push(
       vscode.commands.registerCommand('hamster.row.' + act, rowCmd(act)));
   }

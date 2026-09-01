@@ -15,7 +15,7 @@ import sys
 import time
 
 SKIP_FILES = {"wheel-snapshot.json", "heal-deferred.json", "pr-cache.json",
-              "pins.json"}
+              "pins.json", "worktrees.json"}
 
 
 def parse_ts(t):
@@ -40,12 +40,12 @@ def tpath(proj, sid, cwd):
 
 
 def probe(proj, sid, cwd, nowts):
-    """One tail read -> (active, midturn, last_text, mtime).
+    """One tail read -> (active, midturn, last_text, mtime, last_file).
     active/midturn logic identical to hamster statusline; last_text = most
     recent assistant prose in the tail window, for row previews."""
     tp = tpath(proj, sid, cwd)
     if not tp:
-        return (False, False, "", 0.0)
+        return (False, False, "", 0.0, [])
     try:
         mtime = os.path.getmtime(tp)
         fresh = nowts - mtime <= 30
@@ -55,7 +55,22 @@ def probe(proj, sid, cwd, nowts):
             f.seek(max(0, sz - 65536))
             data = f.read().decode("utf-8", "ignore")
     except Exception:
-        return (False, False, "", 0.0)
+        return (False, False, "", 0.0, [])
+    # every file any tool touched in the tail, most recent first (deduped) —
+    # the caller picks the first repo-relevant one, so end-of-turn memory
+    # writes and /tmp scratch can't shadow the real operating worktree
+    last_files = []
+    for m in re.finditer(r'"file_path":"((?:[^"\\]|\\.)*)"', data):
+        v = m.group(1)
+        if v:
+            last_files.append(v)
+    seen_f = set()
+    ordered = []
+    for v in reversed(last_files):
+        if v not in seen_f:
+            seen_f.add(v)
+            ordered.append(v)
+    last_files = ordered[:20]
     act = mid = None
     last_text = ""
     for line in reversed(data.splitlines()):
@@ -93,7 +108,7 @@ def probe(proj, sid, cwd, nowts):
                 act, mid = False, False
             else:
                 act, mid = fresh, True
-    return (bool(act), bool(mid), last_text, mtime)
+    return (bool(act), bool(mid), last_text, mtime, last_files)
 
 
 _branch_cache = {}
@@ -339,6 +354,30 @@ def main():
         pins = json.load(open(os.path.join(hdir, "pins.json")))
     except Exception:
         pins = {}
+    try:
+        primaries = json.load(open(os.path.join(hdir, "worktrees.json")))
+    except Exception:
+        primaries = {}
+
+    def primary_of(sid, cwd, root, last_files):
+        manual = primaries.get(sid)
+        if manual:
+            return {"path": manual, "branch": branch_of(manual),
+                    "source": "manual"}
+        if root:
+            cands = list(worktrees_of(root).values()) + [root]
+            for lf in last_files:   # most recent repo-relevant file decides
+                best = ""
+                for c in cands:
+                    if lf.startswith(c.rstrip("/") + "/") and len(c) > len(best):
+                        best = c
+                if not best:
+                    continue
+                if os.path.realpath(best) == os.path.realpath(cwd or ""):
+                    break   # recent work genuinely in the cwd checkout
+                return {"path": best, "branch": branch_of(best),
+                        "source": "active"}
+        return {"path": cwd, "branch": branch_of(cwd), "source": "cwd"}
 
     hidesnooze = False
     try:
@@ -366,7 +405,7 @@ def main():
             continue
         sid = d.get("session_id", "") or ""
         cwd = d.get("cwd", "") or ""
-        act, mid, last_text, mtime = probe(proj, sid, cwd, nowts)
+        act, mid, last_text, mtime, last_files = probe(proj, sid, cwd, nowts)
         agents = agents_live(proj, sid, cwd, nowts)
         sub = max(int(d.get("subagents", 0) or 0), agents)
         if sub > 0 and (mid or agents > 0):
@@ -398,6 +437,7 @@ def main():
         br = branch_of(cwd)
         root = repo_root(cwd)
         prs = prs_for(sid, br, root)
+        primary = primary_of(sid, cwd, root, last_files)
         wt = worktrees_of(root)
         for p_ in prs:
             hb = p_.get("branch") or ""
@@ -407,6 +447,7 @@ def main():
                     "subagents": sub, "sid": sid, "cwd": cwd,
                     "base": os.path.basename(cwd.rstrip("/")) if cwd else "",
                     "branch": br, "prs": prs,
+                    "primary": primary,
                     "tickets": tickets_of(br, prs),
                     "artifacts": artifacts_of(sid),
                     "pin": sid in pins,
