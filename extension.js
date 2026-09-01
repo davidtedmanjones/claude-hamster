@@ -729,6 +729,12 @@ function html() {
 <div id="list"></div>
 <div id="err" hidden></div>
 <script>
+  document.getElementById('counts').textContent = 'script alive — waiting for first poll…';
+  window.onerror = (msg, src, line) => {
+    const e = document.getElementById('err');
+    e.hidden = false;
+    e.textContent = 'webview error: ' + msg + ' @' + line;
+  };
   const vs = acquireVsCodeApi();
   const send = (cmd, target, name) => vs.postMessage({ cmd, target, name });
   // base order = alphabetical (stable shelf); a lens is a transient overlay —
