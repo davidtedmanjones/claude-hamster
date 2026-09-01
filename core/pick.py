@@ -11,6 +11,7 @@ import glob
 import json
 import os
 import re
+import subprocess
 import sys
 
 _now = datetime.datetime.utcnow
@@ -76,6 +77,26 @@ def _title(proj, sid, cwd):  # user alias > latest ai-title > first user msg > s
     return " ".join((t or fst or ("session " + sid[:8])).split())[:44]
 
 
+def _live_pids():
+    """sid -> pid for running `claude ... --resume <sid>` processes. Fresh
+    (non-resume) sessions carry no sid in argv and can't be matched."""
+    m = {}
+    try:
+        out = subprocess.run(["ps", "-axo", "pid=,args="],
+                             capture_output=True, text=True, timeout=5).stdout
+        for ln in out.splitlines():
+            ln = ln.strip()
+            if "claude" not in ln or "--resume" not in ln:
+                continue
+            pid = ln.split(None, 1)[0]
+            mm = re.search(r"--resume\s+([0-9a-f][0-9a-f-]{7,})", ln)
+            if mm and pid.isdigit():
+                m[mm.group(1)] = int(pid)
+    except Exception:
+        pass
+    return m
+
+
 def _tracked_sids(hdir):
     out = set()
     for f in glob.glob(os.path.join(hdir, "*.json")):
@@ -113,6 +134,7 @@ def build_adopt(reg, hdir, proj, win_hours):
             sid = d.get("session_id")
             if sid and (sid not in last or (d.get("at") or "") > (last[sid].get("at") or "")):
                 last[sid] = d
+    pids = _live_pids()
     rows = []
     for sid, d in last.items():
         if sid in tracked:
@@ -121,11 +143,20 @@ def build_adopt(reg, hdir, proj, win_hours):
         pat = _parse(at)
         if pat and (now - pat).total_seconds() > win_hours * 3600:
             continue
-        if not os.path.exists(_tpath(proj, sid, cwd)):
+        tp = _tpath(proj, sid, cwd)
+        if not os.path.exists(tp):
             continue  # only offer resumable sessions
+        pid = pids.get(sid)
+        fresh = False   # transcript written recently -> some process is on it
+        try:
+            import time
+            fresh = time.time() - os.path.getmtime(tp) < 120
+        except Exception:
+            pass
         base = os.path.basename(cwd.rstrip("/")) or cwd
         age = _short(now - pat) if pat else "?"
         rows.append({"out": sid + "\t" + cwd, "target": "",
+                     "pid": pid, "fresh": fresh,
                      "label": "%s  ·  %s  ·  %s  ·  %s ago" % (sid[:8], _title(proj, sid, cwd), base, age),
                      "_sort": pat or now})
     rows.sort(key=lambda r: r["_sort"], reverse=True)

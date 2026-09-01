@@ -531,12 +531,46 @@ class WheelProvider {
         ], { HAMSTER_PICK_DRY: '1' });
         let rows = [];
         try { rows = JSON.parse(r.stdout); } catch (e) { /* none */ }
-        if (!rows.length) { vscode.window.showInformationMessage('Hamster: no registered sessions outside the wheel.'); break; }
-        const picked = await vscode.window.showQuickPick(
-          rows.map(x => ({ label: x.label, out: x.out })),
-          { canPickMany: true, placeHolder: 'Adopt sessions into the wheel' });
-        if (!picked || !picked.length) break;
-        for (const p of picked) {
+        if (!rows.length) { vscode.window.showInformationMessage('Hamster: no registered sessions outside the board.'); break; }
+        const killBtn = { iconPath: new vscode.ThemeIcon('stop-circle'),
+          tooltip: 'Kill the process holding this session (SIGTERM) — adopting while it runs yields a blank window' };
+        const mk = (x) => ({
+          label: (x.pid ? '$(zap) ' : '') + x.label,
+          description: x.pid ? 'live — pid ' + x.pid : (x.fresh ? 'transcript active <2min — may be running elsewhere' : ''),
+          out: x.out, pid: x.pid,
+          buttons: x.pid ? [killBtn] : [],
+        });
+        const qp = vscode.window.createQuickPick();
+        qp.canSelectMany = true;
+        qp.placeholder = 'Adopt sessions (⚡ = held by a live process — kill it first via the row button)';
+        qp.items = rows.map(mk);
+        qp.onDidTriggerItemButton(async (ev) => {
+          const pid = ev.item.pid;
+          if (!pid) return;
+          try { process.kill(pid, 'SIGTERM'); } catch (e) { /* already gone */ }
+          await new Promise(res => setTimeout(res, 1500));
+          let alive = true;
+          try { process.kill(pid, 0); } catch (e) { alive = false; }
+          if (alive) {
+            vscode.window.showWarningMessage('Hamster: pid ' + pid + ' survived SIGTERM — not escalating; kill it manually if you are sure.');
+            return;
+          }
+          qp.items = qp.items.map(x => x === ev.item
+            ? { ...x, label: x.label.replace('$(zap) ', ''), description: 'process killed — safe to adopt', pid: undefined, buttons: [] }
+            : x);
+        });
+        const picked = await new Promise((res) => {
+          qp.onDidAccept(() => { res(qp.selectedItems.slice()); qp.hide(); });
+          qp.onDidHide(() => { res([]); qp.dispose(); });
+          qp.show();
+        });
+        const safe = picked.filter(p => !p.pid);
+        if (picked.length > safe.length) {
+          vscode.window.showWarningMessage(
+            'Hamster: skipped ' + (picked.length - safe.length) + ' live session(s) — '
+            + 'kill the holder (⚡ row button) first; adopting a running session produces a blank window.');
+        }
+        for (const p of safe) {
           const [sid, cwd] = p.out.split('\t');
           const ar = await hamster(['adopt', sid, cwd || '']);
           if (ar.err) vscode.window.showWarningMessage('Adopt failed: ' + (ar.stdout || ar.stderr).trim());
