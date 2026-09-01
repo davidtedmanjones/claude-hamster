@@ -620,7 +620,7 @@ function html() {
   .row.unseen .dot { visibility: visible; }
   .pinstar { flex: none; font-size: 10px; }
   .name { overflow: hidden; text-overflow: ellipsis; flex: 1 1 auto; }
-  .meta { opacity: .6; flex: none; font-size: 11px; }
+  .meta { opacity: .55; flex: none; font-size: 9.5px; }
   .sub { flex-basis: 100%; padding-left: 20px; font-size: 10px; opacity: .6; overflow: hidden; text-overflow: ellipsis; }
   .subx { flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 2px 4px; padding: 2px 8px 4px 20px; font-size: 10px; opacity: .75; }
   .c { border: 1px solid rgba(128,128,128,.35); border-radius: 3px; padding: 0 4px; cursor: pointer; white-space: nowrap; }
@@ -628,9 +628,9 @@ function html() {
   .ticket { flex: none; font-size: 10px; opacity: .6; border: 1px solid rgba(128,128,128,.4); border-radius: 3px; padding: 0 3px; }
   .pr { color: var(--vscode-textLink-foreground); cursor: pointer; }
   .pr:hover { text-decoration: underline; }
-  .acts { display: none; gap: 2px; flex: none; }
-  .row:hover .acts { display: inline-flex; }
-  .acts button { padding: 0 4px; background: transparent; }
+  .acts { display: inline-flex; visibility: hidden; gap: 2px; flex: none; }
+  .row:hover .acts { visibility: visible; }
+  .acts button { padding: 0 3px; background: transparent; font-size: 9.5px; opacity: .8; }
   .acts button:hover { background: var(--vscode-toolbar-hoverBackground, rgba(128,128,128,.25)); }
   #err { padding: 12px 10px; }
   #err button { margin-top: 8px; display: block; }
@@ -702,12 +702,12 @@ function html() {
   const SKEL =
     '<span class="dot" title="Returned — you haven\\'t seen this response yet"></span>' +
     '<span class="icon"></span><span class="pinstar" hidden>📌</span>' +
-    '<span class="ticket" hidden></span><span class="name"></span><span class="meta"></span>' +
+    '<span class="ticket" hidden></span><span class="name"></span>' +
     '<span class="acts">' +
       '<button data-a="pin" title="Pin / unpin — pinned sessions float above the a–z shelf (lenses override)">📌</button>' +
       '<button data-a="snooze" title="Snooze (hide) this session…">💤</button>' +
       '<button data-a="unsnooze" title="Unsnooze — back in the ready queue" hidden>⏰</button>' +
-    '</span><span class="sub"></span><span class="subx" hidden></span>';
+    '</span><span class="meta"></span><span class="sub"></span><span class="subx" hidden></span>';
   const rowEls = new Map();   // target -> element, reused across polls
   const expandedRows = new Set();   // targets with the detail accordion open (ephemeral)
 
