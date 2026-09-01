@@ -196,19 +196,51 @@ def main():
 
     live = []
     active_tgt = ""
+    panes = {}   # target -> (pane_pid, pane_dead)
     try:
         out = subprocess.run(
             ["tmux", "list-windows", "-t", ts, "-F",
-             "#{session_name}:#{window_index}\t#{window_name}\t#{window_active}"],
+             "#{session_name}:#{window_index}\t#{window_name}\t#{window_active}"
+             "\t#{pane_pid}\t#{pane_dead}"],
             capture_output=True, text=True, timeout=5).stdout
         for ln in out.splitlines():
             a = ln.split("\t")
-            if len(a) >= 3:
+            if len(a) >= 5:
                 live.append((a[0], a[1]))
                 if a[2] == "1":
                     active_tgt = a[0]
+                panes[a[0]] = (a[3], a[4] == "1")
     except Exception:
         pass
+
+    # one ps snapshot -> per-pane process-tree memory/cpu (claude + children)
+    ps_info, ps_kids = {}, {}
+    try:
+        out = subprocess.run(["ps", "-axo", "pid=,ppid=,rss=,pcpu="],
+                             capture_output=True, text=True, timeout=5).stdout
+        for ln in out.splitlines():
+            f = ln.split()
+            if len(f) >= 4:
+                ps_info[f[0]] = (int(f[2]), float(f[3]))
+                ps_kids.setdefault(f[1], []).append(f[0])
+    except Exception:
+        pass
+
+    def proc_of(tgt):
+        pid, dead = panes.get(tgt, ("", True))
+        alive = bool(pid) and not dead and pid in ps_info
+        rss = 0
+        cpu = 0.0
+        if alive:
+            stack = [pid]
+            while stack:
+                q = stack.pop()
+                r, c = ps_info.get(q, (0, 0.0))
+                rss += r
+                cpu += c
+                stack.extend(ps_kids.get(q, []))
+        return {"pid": int(pid) if pid.isdigit() else None,
+                "alive": alive, "rss_kb": rss, "cpu": round(cpu, 1)}
     if not live:
         print(json.dumps({"ok": False, "error": "no tmux session '%s'" % ts,
                           "session": ts, "windows": []}))
@@ -318,12 +350,13 @@ def main():
 
     windows = []
     counts = {"ready": 0, "working": 0, "attention": 0, "snoozed": 0,
-              "shell": 0, "unseen": 0}
+              "shell": 0, "unseen": 0, "off": 0}
     for tgt, wname in live:
         d = state.get(tgt)
         row = {"target": tgt,
                "index": int(tgt.rsplit(":", 1)[1]) if ":" in tgt else 0,
-               "name": wname, "active": tgt == active_tgt}
+               "name": wname, "active": tgt == active_tgt,
+               "proc": proc_of(tgt)}
         if not d:
             row.update({"state": "shell", "subagents": 0,
                         "sid": "", "cwd": "", "base": "", "last_text": "",
@@ -351,6 +384,8 @@ def main():
         else:
             st = "ready"
         counts[st] += 1
+        if not row["proc"]["alive"]:
+            counts["off"] += 1
         unseen = bool(d.get("unseen")) and st != "working"
         if unseen:
             counts["unseen"] += 1

@@ -491,6 +491,18 @@ PY
       *) echo "usage: hamster artifact add <url|path> [label] | list | rm <i>"; exit 1;;
     esac
     ;;
+  hibernate)  # stop the claude process but KEEP the window/state — frees the
+    # memory of an idle session; ⟲ restart (or `hamster restart current`) wakes
+    # it by resuming the same sid. remain-on-exit holds the dead pane so the
+    # window (and its board row) survives.
+    t=$(cur_target); [ -z "$t" ] && exit 0
+    pid=$(tmux list-panes -t "$t" -F '#{pane_pid}' 2>/dev/null | head -1)
+    [ -z "$pid" ] && { echo "no process in $t"; exit 1; }
+    tmux set-option -w -t "$t" remain-on-exit on 2>/dev/null
+    pkill -TERM -P "$pid" 2>/dev/null; kill -TERM "$pid" 2>/dev/null
+    tmux display-message "Hamster: ⭘ hibernating $t — restart to wake" 2>/dev/null
+    echo "hibernating $t (pid $pid)"
+    ;;
   restart)  # respawn wheel claude processes in place (post claude-update); each resumes its sid
     # graceful: TERM the pane's process tree, wait for a clean exit, then respawn
     # the same window with `claude --resume <sid>` — window, name, index, queue
@@ -934,6 +946,8 @@ Hamster — track tmux-hosted Claude sessions; you direct attention, it keeps th
   hamster pin                toggle pin-to-top for the current session (sidebar shelf floats it)
   hamster artifact add <url|path> [label]  record a link/file artifact for the current session
   hamster artifact list|rm <i>  list / remove them (Artifact-tool publishes auto-captured by hook)
+  hamster hibernate          stop the current session's claude but keep the window — frees
+                             memory; restart wakes it (resumes the same sid)
   hamster restart [current|all|force]  respawn claude processes in place, resuming each sid —
                              post claude-update refresh; 'all' skips working sessions, 'force' doesn't
   hamster relabel            refresh all window names from session AI titles

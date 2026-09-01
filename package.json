@@ -2,7 +2,7 @@
   "name": "claude-hamster",
   "displayName": "Hamster",
   "description": "Rich sidebar for hamster tmux Claude sessions \u2014 state board, jump, snooze, notes, PR decoration; you direct attention, it never does.",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "publisher": "davidtedmanjones",
   "private": true,
   "engines": {
@@ -125,6 +125,10 @@
       {
         "command": "hamster.row.close",
         "title": "Close Session\u2026"
+      },
+      {
+        "command": "hamster.row.hibernate",
+        "title": "Hibernate \u2014 Kill Process, Keep Session"
       }
     ],
     "keybindings": [
@@ -270,14 +274,19 @@
           "group": "3_facts@1"
         },
         {
+          "command": "hamster.row.hibernate",
+          "when": "webviewSection == 'hamsterRow' && !hamsterOff",
+          "group": "4_danger@1"
+        },
+        {
           "command": "hamster.row.restart",
           "when": "webviewSection == 'hamsterRow'",
-          "group": "4_danger@1"
+          "group": "4_danger@2"
         },
         {
           "command": "hamster.row.close",
           "when": "webviewSection == 'hamsterRow'",
-          "group": "4_danger@2"
+          "group": "4_danger@3"
         }
       ],
       "commandPalette": [
@@ -311,6 +320,10 @@
         },
         {
           "command": "hamster.row.close",
+          "when": "false"
+        },
+        {
+          "command": "hamster.row.hibernate",
           "when": "false"
         }
       ]

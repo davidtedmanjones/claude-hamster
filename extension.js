@@ -478,6 +478,16 @@ class WheelProvider {
         if (v) await hamster(['rename', v], T);
         break;
       }
+      case 'hibernate': {
+        if (m.working) {
+          const yes = await vscode.window.showWarningMessage(
+            `"${m.name || t}" is mid-turn — hibernating kills the in-flight work. Continue?`,
+            { modal: true }, 'Hibernate');
+          if (!yes) break;
+        }
+        await hamster(['hibernate'], T);
+        break;
+      }
       case 'restart': {
         const yes = await vscode.window.showWarningMessage(
           `Restart claude for "${m.name || t}"? Resumes the same session in a fresh process.`,
@@ -602,6 +612,7 @@ function html() {
   .row:hover { background: var(--vscode-list-hoverBackground); }
   .row.active { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); }
   .row.snoozed { opacity: .5; }
+  .row.off { opacity: .55; }
   .icon { width: 14px; text-align: center; flex: none; }
   .dot { width: 9px; height: 9px; border-radius: 50%; flex: none; visibility: hidden;
     background: var(--vscode-charts-green, #2da042);
@@ -715,9 +726,11 @@ function html() {
     const p = el._w || {};
     el.dataset.n = w.name;
     const vsctx = JSON.stringify({ webviewSection: 'hamsterRow', preventDefaultContextMenuItems: true,
-      target: w.target, name: w.name, hamsterSnoozed: w.state === 'snoozed' });
+      target: w.target, name: w.name, hamsterSnoozed: w.state === 'snoozed',
+      hamsterWorking: w.state === 'working', hamsterOff: !(w.proc && w.proc.alive) });
     if (el._vsctx !== vsctx) { el.setAttribute('data-vscode-context', vsctx); el._vsctx = vsctx; }
-    const cls = 'row ' + w.state + (w.active ? ' active' : '') + (w.unseen ? ' unseen' : '');
+    const cls = 'row ' + w.state + (w.active ? ' active' : '') + (w.unseen ? ' unseen' : '')
+      + (w.proc && !w.proc.alive ? ' off' : '');
     if (el._cls !== cls) {
       const hadState = p.state;
       el.className = cls;
@@ -746,7 +759,14 @@ function html() {
     if (tkEl.textContent !== tkTxt) tkEl.textContent = tkTxt;
     if (tkEl.title !== tks.join('  ')) tkEl.title = tks.join('  ');
     setText(el, '.name', w.name);
+    const pc = w.proc || {};
+    const mem = pc.alive
+      ? (pc.rss_kb >= 1048576 ? (pc.rss_kb / 1048576).toFixed(1) + 'G'
+                              : Math.round(pc.rss_kb / 1024) + 'M')
+      : '';
     const meta = [w.subagents ? '⚒' + w.subagents : '',
+                  pc.alive ? '⚡' + mem + (pc.cpu >= 10 ? ' ' + Math.round(pc.cpu) + '%' : '')
+                           : '⭘ off',
                   w.state === 'snoozed' ? dur(w.snooze_left_s) : dur(w.waiting_s)]
                  .filter(Boolean).join(' ');
     setText(el, '.meta', meta);
@@ -809,7 +829,10 @@ function html() {
     subxEl.hidden = !xp;
     if (el._subx !== subxHtml) { subxEl.innerHTML = subxHtml; el._subx = subxHtml; }
     const tipLines = [w.target + (w.sid ? '  ' + w.sid.slice(0, 8) : ''),
-                      w.cwd + (w.branch ? '  ⎇ ' + w.branch : '')];
+                      w.cwd + (w.branch ? '  ⎇ ' + w.branch : ''),
+                      (w.proc && w.proc.alive)
+                        ? 'pid ' + w.proc.pid + ' · ' + Math.round(w.proc.rss_kb / 1024) + 'MB · ' + w.proc.cpu + '% cpu'
+                        : 'process off — Restart Claude Process (right-click) wakes it'];
     const tipPrs = openPrs.concat(donePrs.slice(-(Math.max(0, 8 - openPrs.length))));
     for (const p of tipPrs) {
       if (p.url) tipLines.push('#' + p.number + (p.state ? ' ' + p.state : '') + '  ' + p.url);
@@ -841,7 +864,8 @@ function html() {
     document.getElementById('counts').textContent =
       (st.windows||[]).length + ' sess · ' + (c.attention ? c.attention + ' need-you · ' : '') +
       (c.unseen ? c.unseen + ' unread · ' : '') +
-      (c.ready||0) + ' ready · ' + (c.working||0) + ' working · ' + (c.snoozed||0) + ' snoozed';
+      (c.ready||0) + ' ready · ' + (c.working||0) + ' working · ' + (c.snoozed||0) + ' snoozed' +
+      (c.off ? ' · ' + c.off + ' off' : '');
     const hide = document.getElementById('hideChip');
     hide.textContent = st.hidesnooze ? '💤 hidden' : '💤 shown';
     hide.title = st.hidesnooze
@@ -951,9 +975,10 @@ function activate(context) {
   setupDone.then(() => maybeOfferFkeys(context));
   // row context-menu commands receive the row's data-vscode-context object
   const rowCmd = (act) => (ctx) =>
-    provider.onMessage({ cmd: act, target: ctx && ctx.target, name: ctx && ctx.name });
+    provider.onMessage({ cmd: act, target: ctx && ctx.target, name: ctx && ctx.name,
+                         working: !!(ctx && ctx.hamsterWorking) });
   for (const act of ['pin', 'snooze', 'unsnooze', 'rename', 'ainame',
-                     'addartifact', 'restart', 'close']) {
+                     'addartifact', 'hibernate', 'restart', 'close']) {
     context.subscriptions.push(
       vscode.commands.registerCommand('hamster.row.' + act, rowCmd(act)));
   }
