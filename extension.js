@@ -479,6 +479,12 @@ class WheelProvider {
         await hamster(['hibernate'], T);
         break;
       }
+      case 'pinWorktree': {
+        if (!m.path) break;
+        const r = await hamster(['primary', m.path], T);
+        if (r.stdout.trim()) vscode.window.setStatusBarMessage('Hamster: ' + r.stdout.trim().split('\n').pop(), 4000);
+        break;
+      }
       case 'setprimary': {
         const st = this.state && this.state.ok ? this.state : await getState();
         const row = st && (st.windows || []).find(x => x.target === t);
@@ -856,8 +862,9 @@ function html() {
       ? '<span class="detline"><span class="detlab">' + lab + '</span>' + chips + '</span>' : '';
     const detHtml =
       detline('Worktrees:', wts.map(x =>
-        '<span class="c dirchip" data-p="' + esc(x.path) + '" title="' + esc(x.path)
-        + ' — open in new window / reveal / copy">📁 ' + esc((x.path.split('/').pop() || x.branch).slice(0, 34)) + '</span>').join(''))
+        '<span class="c wtpin" data-p="' + esc(x.path) + '" title="' + esc(x.path)
+        + '\\nclick: make this the primary worktree — the agent working elsewhere later re-takes it">📁 '
+        + esc((x.path.split('/').pop() || x.branch).slice(0, 34)) + '</span>').join(''))
       + detline('PRs:', allPrs.map(prChip).join(''))
       + detline('Tickets:', (w.tickets || []).map(tk =>
         '<span class="c tkchip" data-k="' + esc(tk) + '" title="Open ' + esc(tk) + ' in Jira">' + esc(tk) + '</span>').join(''))
@@ -991,10 +998,14 @@ function html() {
   }
 
   document.getElementById('list').addEventListener('click', e => {
-    const chip = e.target.closest('.pr, .dirchip, .tkchip, .artchip, .xpand');
+    const chip = e.target.closest('.pr, .dirchip, .wtpin, .tkchip, .artchip, .xpand');
     if (chip) {
       e.stopPropagation();
       if (chip.classList.contains('pr')) vs.postMessage({ cmd: 'openpr', url: chip.dataset.url });
+      else if (chip.classList.contains('wtpin')) {
+        const row = chip.closest('.row');
+        vs.postMessage({ cmd: 'pinWorktree', target: row && row.dataset.t, name: row && row.dataset.n, path: chip.dataset.p });
+      }
       else if (chip.classList.contains('dirchip')) vs.postMessage({ cmd: 'opendir', path: chip.dataset.p });
       else if (chip.classList.contains('tkchip')) vs.postMessage({ cmd: 'openticket', key: chip.dataset.k });
       else if (chip.classList.contains('artchip')) vs.postMessage({ cmd: 'openartifact', url: chip.dataset.u, path: chip.dataset.p });
