@@ -38,31 +38,34 @@ try:
  t=os.environ['CF']+'.tmp'; json.dump(d,open(t,'w')); os.replace(t,os.environ['CF'])
 except Exception: pass"; }
 
-title_for(){  # sid cwd -> short human label (user alias > latest ai-title > 1st prompt)
+title_for(){  # sid cwd -> "label<TAB>turns": user alias > ai-title > 1st prompt;
+  # turns = real user prompts, counted in the same full scan (no extra IO)
   python3 - "$1" "$2" "$PROJ" <<'PY'
 import json,sys,os,glob,re
 sid,cwd,proj=sys.argv[1],sys.argv[2],sys.argv[3]
+alias=None
 try:  # resurrect-names.json = the one user-given name store, shared with resurrect
     a=json.load(open(os.path.expanduser("~/.claude/resurrect-names.json")))
-    if isinstance(a,dict) and a.get(sid):
-        print(" ".join(str(a[sid]).split())[:60]); raise SystemExit
-except SystemExit: raise
+    if isinstance(a,dict) and a.get(sid): alias=" ".join(str(a[sid]).split())[:60]
 except Exception: pass
 tp=os.path.join(proj,re.sub(r'[/.]','-',cwd),sid+".jsonl")
 if not os.path.exists(tp):                       # recorded cwd may differ from the project dir
     g=glob.glob(os.path.join(proj,"*",sid+".jsonl")); tp=g[0] if g else tp
-title=first=None
+title=first=None; turns=0
 if os.path.exists(tp):
     for line in open(tp):
         try: d=json.loads(line)
         except: continue
         if d.get("type")=="ai-title" and d.get("aiTitle"): title=d["aiTitle"]
-        elif first is None and d.get("type")=="user":
+        elif d.get("type")=="user":
             m=d.get("message",{}); c=m.get("content")
-            if isinstance(c,list): c=" ".join(x.get("text","") for x in c if isinstance(x,dict))
+            if isinstance(c,list): c=" ".join(x.get("text","") or "" for x in c if isinstance(x,dict))
             c=(c or "").strip().replace("\n"," ")
-            if c and not c.startswith("<") and not c.startswith("["): first=c   # skip command/interrupt markers
-print(" ".join((title or first or ("session "+sid[:8])).split())[:60])
+            if c and not c.startswith("<") and not c.startswith("["):
+                turns+=1
+                if first is None: first=c
+lbl=alias or " ".join((title or first or ("session "+sid[:8])).split())[:60]
+print("%s\t%d"%(lbl,turns))
 PY
 }
 
@@ -144,7 +147,19 @@ if os.environ.get("HW_CWD"): d["cwd"]=os.environ["HW_CWD"]
 tmp=f+".tmp"; json.dump(d,open(tmp,"w")); os.replace(tmp,f)
 PY
     [ -n "$sid" ] && set_sid_opt "$t" "$sid"
-    [ -n "$sid" ] && [ -z "$(pinned_of "$(kf "$t")")" ] && { lbl=$(title_for "$sid" "$cwd"); [ -n "$lbl" ] && tmux rename-window -t "$t" "$lbl"; }
+    if [ -n "$sid" ]; then
+      out=$(title_for "$sid" "$cwd"); lbl="${out%%$'\t'*}"; trn="${out##*$'\t'}"
+      [ -z "$(pinned_of "$(kf "$t")")" ] && [ -n "$lbl" ] && tmux rename-window -t "$t" "$lbl"
+      case "$trn" in ''|*[!0-9]*) ;; *) HW_TRN="$trn" python3 - "$(kf "$t")" <<'PY'
+import json,os,sys
+f=sys.argv[1]
+try: d=json.load(open(f))
+except Exception: sys.exit(0)
+d["turns"]=int(os.environ["HW_TRN"])
+tmp=f+".tmp"; json.dump(d,open(tmp,"w")); os.replace(tmp,f)
+PY
+      ;; esac
+    fi
     tmux set-option -w -t "$t" @hamster_state ready 2>/dev/null
     tmux set-option -wu -t "$t" @hamster_sub 2>/dev/null
     snapshot_wheel
@@ -230,7 +245,8 @@ PY
       { [ -z "$tgt" ] || [ -z "$sid" ]; } && continue
       set_sid_opt "$tgt" "$sid"
       [ -n "$(pinned_of "$(kf "$tgt")")" ] && continue   # leave hardcoded names alone
-      lbl=$(title_for "$sid" "$cwd"); [ -n "$lbl" ] && tmux rename-window -t "$tgt" "$lbl" 2>/dev/null && n=$((n+1))
+      out=$(title_for "$sid" "$cwd"); lbl="${out%%$'\t'*}"
+      [ -n "$lbl" ] && tmux rename-window -t "$tgt" "$lbl" 2>/dev/null && n=$((n+1))
     done
     echo "relabeled $n window(s)"
     ;;
@@ -247,7 +263,7 @@ PY
     sid="${m%%$'\t'*}"; cwd="${m#*$'\t'}"
     [ -z "$sid" ] && { tmux display-message "Hamster: no session id for this window yet"; exit 0; }
     clear_pin "$(kf "$t")"   # explicit relabel un-pins a hardcoded name
-    lbl=$(title_for "$sid" "$cwd")
+    out=$(title_for "$sid" "$cwd"); lbl="${out%%$'\t'*}"
     if [ -n "$lbl" ]; then
       tmux rename-window -t "$t" "$lbl"; set_sid_opt "$t" "$sid"
       tmux display-message "Hamster: relabeled -> $lbl"

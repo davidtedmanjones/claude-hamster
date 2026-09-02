@@ -120,7 +120,8 @@ class TestProbe(unittest.TestCase):
             {"type": "assistant", "message": {"content": [
                 {"type": "tool_use", "name": "Write", "input": {"file_path": "/w/b.py"}}]}},
         ])
-        act, mid, text, mtime, files = W.probe(self.proj, sid, cwd, time.time())
+        act, mid, text, mtime, files, size = W.probe(self.proj, sid, cwd, time.time())
+        self.assertGreater(size, 0)
         self.assertTrue(act)          # fresh mtime + trailing tool_use
         self.assertTrue(mid)
         self.assertEqual(text, "working on it")

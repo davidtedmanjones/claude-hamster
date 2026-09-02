@@ -50,9 +50,10 @@ def probe(proj, sid, cwd, nowts):
     recent assistant prose in the tail window, for row previews."""
     tp = tpath(proj, sid, cwd)
     if not tp:
-        return (False, False, "", 0.0, [])
+        return (False, False, "", 0.0, [], 0)
     try:
         mtime = os.path.getmtime(tp)
+        tsize = os.path.getsize(tp)
         fresh = nowts - mtime <= 30
         with open(tp, "rb") as f:
             f.seek(0, 2)
@@ -60,7 +61,7 @@ def probe(proj, sid, cwd, nowts):
             f.seek(max(0, sz - 65536))
             data = f.read().decode("utf-8", "ignore")
     except Exception:
-        return (False, False, "", 0.0, [])
+        return (False, False, "", 0.0, [], 0)
     # every file any tool touched in the tail, most recent first (deduped) —
     # the caller picks the first repo-relevant one, so end-of-turn memory
     # writes and /tmp scratch can't shadow the real operating worktree
@@ -126,7 +127,7 @@ def probe(proj, sid, cwd, nowts):
                 act, mid = False, False
             else:
                 act, mid = fresh, True
-    return (bool(act), bool(mid), last_text, mtime, last_files)
+    return (bool(act), bool(mid), last_text, mtime, last_files, tsize)
 
 
 _branch_cache = {}
@@ -448,7 +449,7 @@ def main():
             continue
         sid = d.get("session_id", "") or ""
         cwd = d.get("cwd", "") or ""
-        act, mid, last_text, mtime, last_files = probe(proj, sid, cwd, nowts)
+        act, mid, last_text, mtime, last_files, tsize = probe(proj, sid, cwd, nowts)
         agents = agents_live(proj, sid, cwd, nowts)
         sub = max(int(d.get("subagents", 0) or 0), agents)
         if sub > 0 and (mid or agents > 0):
@@ -487,6 +488,7 @@ def main():
             if hb and hb in wt:
                 p_["worktree"] = wt[hb]
         row.update({"state": st, "unseen": unseen, "root": root,
+                    "turns": int(d.get("turns", 0) or 0), "tsize": tsize,
                     "subagents": sub, "sid": sid, "cwd": cwd,
                     "base": os.path.basename(cwd.rstrip("/")) if cwd else "",
                     "branch": br, "prs": prs,

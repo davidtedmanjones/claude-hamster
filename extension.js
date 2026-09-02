@@ -892,7 +892,10 @@ function html() {
           return '<span class="c artchip" data-u="' + esc(a.url || '') + '" data-p="' + esc(a.path || '')
             + '" title="' + esc([a.url, a.path].filter(Boolean).join('\\n')) + '">🔗 ' + esc(nameA.slice(0, 34)) + '</span>';
         }).join(''))
-      + detline('Process:', '<span>' + esc(procTxt) + '</span>'
+      + detline('Process:', '<span>' + esc([procTxt,
+          w.turns ? w.turns + ' turns' : '',
+          w.tsize ? (w.tsize >= 1048576 ? (w.tsize / 1048576).toFixed(1) + 'MB' : Math.round(w.tsize / 1024) + 'KB') + ' history' : ''
+        ].filter(Boolean).join(' · ')) + '</span>'
         + (detailedMode ? '' : ' <span class="c xpand" title="Collapse">▴ collapse</span>'));
     const hasDet = !!detHtml;
     const xp = detailedMode || expandedRows.has(w.target);
@@ -904,7 +907,7 @@ function html() {
       || [...allPrs].reverse().find(pr => !pr.state || pr.state === 'open')
       || null;
     const subHtml = '<span class="subl">' + dirChip + (curPr ? ' ' + prChip(curPr) : '') + expander
-      + '</span><span class="subr">' + esc(procTxt) + '</span>';
+      + '</span><span class="subr">' + (pc.alive ? '' : '⭘ off') + '</span>';
     if (el._sub !== subHtml) { el.querySelector('.sub').innerHTML = subHtml; el._sub = subHtml; }
     el.classList.toggle('showdet', xp && hasDet);
     if (el._det !== detHtml) { el.querySelector('.det').innerHTML = detHtml; el._det = detHtml; }
