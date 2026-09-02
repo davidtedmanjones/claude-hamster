@@ -537,6 +537,108 @@ PY
       *) echo "usage: hamster artifact add <url|path> [label] | list | rm <i>"; exit 1;;
     esac
     ;;
+  folder)  # organise sessions into named folders (sid-keyed; sidebar groups the shelf)
+    sub="${2:-list}"
+    ff="$HDIR/folders.json"
+    case "$sub" in
+      new)
+        nm="${*:3}"; [ -z "$nm" ] && { echo "usage: hamster folder new <name>"; exit 1; }
+        FN="$nm" python3 - "$ff" <<'PY'
+import json,os,secrets,sys
+f=sys.argv[1]
+try: d=json.load(open(f))
+except Exception: d={"names":{},"sids":{}}
+fid=secrets.token_hex(3)
+d.setdefault("names",{})[fid]=os.environ["FN"]
+tmp=f+".tmp"; json.dump(d,open(tmp,"w")); os.replace(tmp,f)
+print(fid)
+PY
+        ;;
+      assign)
+        fid="${3:-}"; [ -z "$fid" ] && { echo "usage: hamster folder assign <fid|name>"; exit 1; }
+        t=$(cur_target); [ -z "$t" ] && exit 0
+        sid=$(python3 - "$(kf "$t")" <<'PY'
+import json,sys
+try: print(json.load(open(sys.argv[1])).get("session_id") or "")
+except Exception: print("")
+PY
+)
+        [ -z "$sid" ] && { echo "no session id for this window yet"; exit 1; }
+        FS="$sid" FI="$fid" python3 - "$ff" <<'PY'
+import json,os,sys
+f=sys.argv[1]
+try: d=json.load(open(f))
+except Exception: d={"names":{},"sids":{}}
+names=d.setdefault("names",{}); fid=os.environ["FI"]
+if fid not in names:   # allow assigning by name
+    m=[k for k,v in names.items() if v==fid]
+    if len(m)==1: fid=m[0]
+    else: print("no such folder: %s"%fid); raise SystemExit(1)
+d.setdefault("sids",{})[os.environ["FS"]]=fid
+tmp=f+".tmp"; json.dump(d,open(tmp,"w")); os.replace(tmp,f)
+print("assigned -> %s"%names[fid])
+PY
+        ;;
+      clear)
+        t=$(cur_target); [ -z "$t" ] && exit 0
+        sid=$(python3 - "$(kf "$t")" <<'PY'
+import json,sys
+try: print(json.load(open(sys.argv[1])).get("session_id") or "")
+except Exception: print("")
+PY
+)
+        [ -z "$sid" ] && exit 0
+        FS="$sid" python3 - "$ff" <<'PY'
+import json,os,sys
+f=sys.argv[1]
+try: d=json.load(open(f))
+except Exception: raise SystemExit(0)
+d.get("sids",{}).pop(os.environ["FS"],None)
+tmp=f+".tmp"; json.dump(d,open(tmp,"w")); os.replace(tmp,f)
+print("removed from folder")
+PY
+        ;;
+      rename)
+        fid="${3:-}"; nm="${*:4}"
+        { [ -z "$fid" ] || [ -z "$nm" ]; } && { echo "usage: hamster folder rename <fid> <name>"; exit 1; }
+        FI="$fid" FN="$nm" python3 - "$ff" <<'PY'
+import json,os,sys
+f=sys.argv[1]
+try: d=json.load(open(f))
+except Exception: raise SystemExit(1)
+if os.environ["FI"] not in d.get("names",{}): print("no such folder"); raise SystemExit(1)
+d["names"][os.environ["FI"]]=os.environ["FN"]
+tmp=f+".tmp"; json.dump(d,open(tmp,"w")); os.replace(tmp,f)
+print("renamed")
+PY
+        ;;
+      rm)
+        fid="${3:-}"; [ -z "$fid" ] && { echo "usage: hamster folder rm <fid>"; exit 1; }
+        FI="$fid" python3 - "$ff" <<'PY'
+import json,os,sys
+f=sys.argv[1]
+try: d=json.load(open(f))
+except Exception: raise SystemExit(0)
+fid=os.environ["FI"]
+d.get("names",{}).pop(fid,None)
+d["sids"]={k:v for k,v in d.get("sids",{}).items() if v!=fid}
+tmp=f+".tmp"; json.dump(d,open(tmp,"w")); os.replace(tmp,f)
+print("folder removed (sessions kept, unfoldered)")
+PY
+        ;;
+      list|*)
+        python3 - "$ff" <<'PY'
+import json,sys
+try: d=json.load(open(sys.argv[1]))
+except Exception: d={}
+names=d.get("names",{}); sids=d.get("sids",{})
+if not names: print("no folders")
+for fid,nm in sorted(names.items(),key=lambda kv:kv[1].lower()):
+    print("%s  %s  (%d)"%(fid,nm,sum(1 for v in sids.values() if v==fid)))
+PY
+        ;;
+    esac
+    ;;
   fork)  # duplicate the current session's conversation into a NEW session
     # (claude --resume <sid> --fork-session: same context, new session id) —
     # the original window keeps running untouched
@@ -638,7 +740,7 @@ def p(t):
     try: return datetime.datetime.fromisoformat((t or "").replace("Z",""))
     except: return None
 rows=[]
-SKIP={"wheel-snapshot.json","heal-deferred.json","pr-cache.json","pins.json","worktrees.json"}
+SKIP={"wheel-snapshot.json","heal-deferred.json","pr-cache.json","pins.json","worktrees.json","folders.json"}
 for fp in glob.glob(os.path.join(hdir,"*.json")):
     if os.path.basename(fp) in SKIP: continue
     try: rows.append(json.load(open(fp)))
@@ -736,7 +838,7 @@ try:
 except Exception: pass
 ops=[]
 total=ready=snoozed=working=attn=0
-SKIP={"wheel-snapshot.json","heal-deferred.json","pr-cache.json","pins.json","worktrees.json"}
+SKIP={"wheel-snapshot.json","heal-deferred.json","pr-cache.json","pins.json","worktrees.json","folders.json"}
 for fp in glob.glob(os.path.join(hdir,"*.json")):
     if os.path.basename(fp) in SKIP: continue
     try: d=json.load(open(fp))
@@ -969,7 +1071,7 @@ if os.path.exists(deferred):
 # union: snapshot first (has display names), then orphaned per-window files —
 # dedup below is order-sensitive, so snapshot entries win for duplicated sids
 for f in glob.glob(os.path.join(hdir,"*.json")):
-    if os.path.basename(f) in ("wheel-snapshot.json","heal-deferred.json","pr-cache.json","pins.json","worktrees.json"): continue
+    if os.path.basename(f) in ("wheel-snapshot.json","heal-deferred.json","pr-cache.json","pins.json","worktrees.json","folders.json"): continue
     try: d=json.load(open(f))
     except Exception: continue
     tgt=d.get("target",""); sid=d.get("session_id","") or ""
@@ -1070,6 +1172,8 @@ Hamster — track tmux-hosted Claude sessions; you direct attention, it keeps th
                              unset = auto-guess from the latest file the session touched)
   hamster artifact add <url|path> [label]  record a link/file artifact for the current session
   hamster artifact list|rm <i>  list / remove them (Artifact-tool publishes auto-captured by hook)
+  hamster folder new <name> | assign <fid|name> | clear | rename <fid> <n> | rm <fid> | list
+                             organise sessions into sidebar folders (drag rows in the UI)
   hamster fork [name]        duplicate the current session's conversation into a NEW
                              session (--fork-session); the original stays untouched
   hamster hibernate          stop the current session's claude but keep the window — frees

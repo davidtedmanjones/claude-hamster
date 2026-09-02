@@ -480,6 +480,55 @@ class WheelProvider {
         if (v) await hamster(['rename', v], T);
         break;
       }
+      case 'newFolder': {
+        const nm = await vscode.window.showInputBox({ prompt: 'Folder name', ignoreFocusOut: true });
+        if (nm) await hamster(['folder', 'new', nm]);
+        break;
+      }
+      case 'assignFolder': {   // drag row -> folder header
+        if (m.fid) await hamster(['folder', 'assign', m.fid], T);
+        break;
+      }
+      case 'createFolderWith': {   // drag row -> row: name it, folder both
+        const nm = await vscode.window.showInputBox({ prompt: 'New folder name (both sessions move into it)', ignoreFocusOut: true });
+        if (!nm) break;
+        const r = await hamster(['folder', 'new', nm]);
+        const fid = (r.stdout || '').trim().split('\n').pop();
+        if (!/^[0-9a-f]{6}$/.test(fid)) { vscode.window.showWarningMessage('Hamster: folder create failed'); break; }
+        await hamster(['folder', 'assign', fid], { HAMSTER_TARGET: m.a });
+        await hamster(['folder', 'assign', fid], { HAMSTER_TARGET: m.b });
+        break;
+      }
+      case 'moveToFolder': {
+        const st = this.state && this.state.ok ? this.state : await getState();
+        const names = (st && st.folders) || {};
+        const opts = Object.entries(names).map(([fid, nm]) => ({ label: '$(folder) ' + nm, fid }));
+        opts.push({ label: '$(add) New Folder…', fid: '__new__' });
+        const pick = await vscode.window.showQuickPick(opts, { placeHolder: 'Move ' + (m.name || t) + ' to folder' });
+        if (!pick) break;
+        let fid = pick.fid;
+        if (fid === '__new__') {
+          const nm = await vscode.window.showInputBox({ prompt: 'Folder name', ignoreFocusOut: true });
+          if (!nm) break;
+          const r = await hamster(['folder', 'new', nm]);
+          fid = (r.stdout || '').trim().split('\n').pop();
+        }
+        if (/^[0-9a-f]{6}$/.test(fid)) await hamster(['folder', 'assign', fid], T);
+        break;
+      }
+      case 'clearFolder': await hamster(['folder', 'clear'], T); break;
+      case 'renameFolder': {
+        const nm = await vscode.window.showInputBox({ prompt: 'Folder name', value: m.fname || '', ignoreFocusOut: true });
+        if (nm && m.fid) await hamster(['folder', 'rename', m.fid, nm]);
+        break;
+      }
+      case 'deleteFolder': {
+        const yes = await vscode.window.showWarningMessage(
+          'Delete folder "' + (m.fname || m.fid) + '"? Sessions are kept, just unfoldered.',
+          { modal: true }, 'Delete folder');
+        if (yes && m.fid) await hamster(['folder', 'rm', m.fid]);
+        break;
+      }
       case 'fork': {
         const nm = await vscode.window.showInputBox({
           prompt: 'Name for the forked session (same context, new session id — the original is untouched)',
@@ -705,7 +754,7 @@ function html() {
     border: 1px solid var(--vscode-input-border, transparent); border-radius: 3px; outline: none; }
   #filt:focus { border-color: var(--vscode-focusBorder); }
   .row { display: flex; flex-wrap: wrap; align-items: center; gap: 0 6px; padding: 3px 8px; cursor: pointer; white-space: nowrap; position: relative; overflow: hidden; }
-  .row:nth-child(even) { background: color-mix(in srgb, var(--vscode-foreground) 4%, transparent); }
+  .row.even { background: color-mix(in srgb, var(--vscode-foreground) 4%, transparent); }
   .row:hover { background: var(--vscode-list-hoverBackground); }
   .row.active { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); }
   .row.snoozed { opacity: .5; }
@@ -726,6 +775,14 @@ function html() {
   .row.showdet .sub { display: none; }
   .detline { display: flex; flex-wrap: wrap; gap: 2px 4px; align-items: center; margin-top: 2px; }
   .detlab { opacity: .5; min-width: 56px; flex: none; }
+  .fhdr { display: flex; align-items: center; gap: 5px; padding: 3px 8px; cursor: pointer;
+    font-weight: 600; font-size: 11px; opacity: .85; }
+  .fhdr .fcount { opacity: .55; font-weight: 400; }
+  .fhdr .fdot { width: 7px; height: 7px; border-radius: 50%; background: var(--vscode-charts-green, #2da042); visibility: hidden; }
+  .fhdr.hasunseen .fdot { visibility: visible; }
+  .fhdr.hasattn { color: var(--vscode-editorWarning-foreground, #d7ba7d); }
+  .row.fchild { padding-left: 20px; }
+  .dragover { outline: 1px dashed var(--vscode-focusBorder, #007fd4); outline-offset: -1px; }
   .wtpin.cur { border-color: var(--vscode-focusBorder, #007fd4); color: var(--vscode-textLink-foreground); opacity: 1; }
   .c { border: 1px solid rgba(128,128,128,.35); border-radius: 3px; padding: 0 4px; cursor: pointer; white-space: nowrap; }
   .c:hover { background: var(--vscode-toolbar-hoverBackground, rgba(128,128,128,.25)); }
@@ -767,6 +824,7 @@ function html() {
   <button data-h="lensState" id="lensState" class="chip">❗ needs-you</button>
   <button data-h="lensRecent" id="lensRecent" class="chip">🕐 recent</button>
   <button data-h="toggleDetails" id="detChip" class="chip" title="Detailed rows: every row shows its Worktrees / PRs / Tickets / Artifacts lines (off = click a row's ▾ to expand it)">≣ details</button>
+  <button data-h="newFolder" title="Create a folder — drag rows onto it (or onto each other) to group sessions">⊞ folder</button>
 </div>
 <input id="filt" placeholder="filter — name, ticket, branch, session id (esc clears)" title="Type to filter the list — matches name, ticket, branch and session id (full or short); Esc clears"></div>
 <div id="list"></div>
@@ -825,6 +883,8 @@ function html() {
       '<button data-a="unsnooze" title="Unsnooze — back in the ready queue" hidden>⏰</button>' +
     '</span><span class="meta"></span><span class="sub"></span><span class="det"></span>';
   const rowEls = new Map();   // target -> element, reused across polls
+  const fEls = new Map();     // folder id -> header element
+  let dragT = null;           // target of the row being dragged
   let detailedMode = false;   // from hamster.detailedRows via the state message
   const expandedRows = new Set();   // targets with the detail accordion open (ephemeral)
 
@@ -833,6 +893,36 @@ function html() {
     el.className = 'row';
     el.dataset.t = t;
     el.innerHTML = SKEL;
+    el.draggable = true;
+    el.addEventListener('dragstart', (e) => { dragT = t; e.dataTransfer.effectAllowed = 'move'; });
+    el.addEventListener('dragover', (e) => { if (dragT && dragT !== t) { e.preventDefault(); el.classList.add('dragover'); } });
+    el.addEventListener('dragleave', () => el.classList.remove('dragover'));
+    el.addEventListener('drop', (e) => {
+      e.preventDefault(); el.classList.remove('dragover');
+      if (dragT && dragT !== t) vs.postMessage({ cmd: 'createFolderWith', a: dragT, b: t });
+      dragT = null;
+    });
+    return el;
+  }
+  function makeFolder(fid) {
+    const el = document.createElement('div');
+    el.className = 'fhdr';
+    el.dataset.fid = fid;
+    el.innerHTML = '<span class="fchev">▾</span><span class="fdot"></span>📁 <span class="fname"></span> <span class="fcount"></span>';
+    el.addEventListener('click', () => {
+      const c = new Set(prefs.collapsedFolders || []);
+      c.has(fid) ? c.delete(fid) : c.add(fid);
+      prefs.collapsedFolders = [...c];
+      vs.setState(prefs);
+      if (lastState) render(lastState);
+    });
+    el.addEventListener('dragover', (e) => { if (dragT) { e.preventDefault(); el.classList.add('dragover'); } });
+    el.addEventListener('dragleave', () => el.classList.remove('dragover'));
+    el.addEventListener('drop', (e) => {
+      e.preventDefault(); el.classList.remove('dragover');
+      if (dragT) vs.postMessage({ cmd: 'assignFolder', target: dragT, fid });
+      dragT = null;
+    });
     return el;
   }
   function setText(el, sel, txt) {
@@ -844,7 +934,8 @@ function html() {
     el.dataset.n = w.name;
     const vsctx = JSON.stringify({ webviewSection: 'hamsterRow', preventDefaultContextMenuItems: true,
       target: w.target, name: w.name, hamsterSnoozed: w.state === 'snoozed',
-      hamsterWorking: w.state === 'working', hamsterOff: !(w.proc && w.proc.alive) });
+      hamsterWorking: w.state === 'working', hamsterOff: !(w.proc && w.proc.alive),
+      hamsterInFolder: !!w.folder });
     if (el._vsctx !== vsctx) { el.setAttribute('data-vscode-context', vsctx); el._vsctx = vsctx; }
     const cls = 'row ' + w.state + (w.active ? ' active' : '') + (w.unseen ? ' unseen' : '')
       + (w.proc && !w.proc.alive ? ' off' : '');
@@ -1060,17 +1151,60 @@ function html() {
       rows.sort((a, b) => (b.pin ? 1 : 0) - (a.pin ? 1 : 0));   // stable: a–z kept within groups
     }
 
+    const names = st.folders || {};
+    const grouping = !prefs.lens && !filt;
+    const seq = [];   // desired flat DOM order: headers + rows
+    const collapsed = new Set(prefs.collapsedFolders || []);
+    if (grouping) {
+      const byF = {};
+      const loose = [];
+      for (const w of rows) {
+        if (w.folder && names[w.folder]) (byF[w.folder] = byF[w.folder] || []).push(w);
+        else loose.push(w);
+      }
+      for (const fid of Object.keys(names).sort((a, b) => names[a].toLowerCase().localeCompare(names[b].toLowerCase()))) {
+        let f = fEls.get(fid);
+        if (!f) { f = makeFolder(fid); fEls.set(fid, f); }
+        const kids = byF[fid] || [];
+        f.querySelector('.fname').textContent = names[fid];
+        f.querySelector('.fcount').textContent = '(' + kids.length + ')';
+        f.querySelector('.fchev').textContent = collapsed.has(fid) ? '▸' : '▾';
+        f.classList.toggle('hasunseen', kids.some(w => w.unseen));
+        f.classList.toggle('hasattn', kids.some(w => w.state === 'attention'));
+        const fctx = JSON.stringify({ webviewSection: 'hamsterFolder', preventDefaultContextMenuItems: true,
+          hamsterFid: fid, hamsterFname: names[fid] });
+        if (f._ctx !== fctx) { f.setAttribute('data-vscode-context', fctx); f._ctx = fctx; }
+        seq.push({ el: f, key: 'f:' + fid });
+        for (const w of kids) seq.push({ el: null, w, child: true, hide: collapsed.has(fid) });
+      }
+      for (const w of loose) seq.push({ el: null, w });
+    } else {
+      for (const w of rows) seq.push({ el: null, w });
+    }
     const seen = new Set();
-    rows.forEach((w, i) => {
-      seen.add(w.target);
-      let el = rowEls.get(w.target);
-      if (!el) { el = makeRow(w.target); rowEls.set(w.target, el); }
-      updateRow(el, w);
+    const seenF = new Set();
+    let visIdx = 0;
+    seq.forEach((item, i) => {
+      let el = item.el;
+      if (el) { seenF.add(item.key.slice(2)); }
+      else {
+        const w = item.w;
+        seen.add(w.target);
+        el = rowEls.get(w.target);
+        if (!el) { el = makeRow(w.target); rowEls.set(w.target, el); }
+        updateRow(el, w);
+        el.hidden = !!item.hide;
+        el.classList.toggle('fchild', !!item.child);
+        el.classList.toggle('even', !item.hide && (visIdx++ % 2 === 1));
+      }
       const cur = list.children[i];
       if (cur !== el) list.insertBefore(el, cur || null);   // minimal moves — untouched rows keep animation phase
     });
     for (const [t, el] of rowEls) {
       if (!seen.has(t)) { el.remove(); rowEls.delete(t); }
+    }
+    for (const [fid, el] of fEls) {
+      if (!seenF.has(fid)) { el.remove(); fEls.delete(fid); }
     }
   }
 
@@ -1141,9 +1275,15 @@ function activate(context) {
   // row context-menu commands receive the row's data-vscode-context object
   const rowCmd = (act) => (ctx) =>
     provider.onMessage({ cmd: act, target: ctx && ctx.target, name: ctx && ctx.name,
-                         working: !!(ctx && ctx.hamsterWorking) });
+                         working: !!(ctx && ctx.hamsterWorking),
+                         fid: ctx && ctx.hamsterFid, fname: ctx && ctx.hamsterFname });
+  for (const act of ['renameFolder', 'deleteFolder']) {
+    context.subscriptions.push(
+      vscode.commands.registerCommand('hamster.folder.' + act, rowCmd(act)));
+  }
   for (const act of ['pin', 'snooze', 'unsnooze', 'rename', 'ainame',
-                     'addartifact', 'setprimary', 'fork', 'hibernate', 'restart', 'close']) {
+                     'addartifact', 'setprimary', 'fork', 'moveToFolder', 'clearFolder',
+                     'hibernate', 'restart', 'close']) {
     context.subscriptions.push(
       vscode.commands.registerCommand('hamster.row.' + act, rowCmd(act)));
   }

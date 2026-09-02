@@ -2,7 +2,7 @@
   "name": "claude-hamster",
   "displayName": "Hamster",
   "description": "Rich sidebar for hamster tmux Claude sessions \u2014 state board, jump, snooze, notes, PR decoration; you direct attention, it never does.",
-  "version": "0.1.26",
+  "version": "0.1.27",
   "publisher": "davidtedmanjones",
   "private": true,
   "engines": {
@@ -140,6 +140,22 @@
       {
         "command": "hamster.row.fork",
         "title": "Fork Session\u2026"
+      },
+      {
+        "command": "hamster.row.moveToFolder",
+        "title": "Move to Folder\u2026"
+      },
+      {
+        "command": "hamster.row.clearFolder",
+        "title": "Remove from Folder"
+      },
+      {
+        "command": "hamster.folder.renameFolder",
+        "title": "Rename Folder\u2026"
+      },
+      {
+        "command": "hamster.folder.deleteFolder",
+        "title": "Delete Folder\u2026"
       }
     ],
     "keybindings": [
@@ -315,6 +331,16 @@
           "group": "3_facts@3"
         },
         {
+          "command": "hamster.row.moveToFolder",
+          "when": "webviewSection == 'hamsterRow'",
+          "group": "3_facts@4"
+        },
+        {
+          "command": "hamster.row.clearFolder",
+          "when": "webviewSection == 'hamsterRow' && hamsterInFolder",
+          "group": "3_facts@5"
+        },
+        {
           "command": "hamster.row.hibernate",
           "when": "webviewSection == 'hamsterRow' && !hamsterOff",
           "group": "4_danger@1"
@@ -328,6 +354,16 @@
           "command": "hamster.row.close",
           "when": "webviewSection == 'hamsterRow'",
           "group": "4_danger@3"
+        },
+        {
+          "command": "hamster.folder.renameFolder",
+          "when": "webviewSection == 'hamsterFolder'",
+          "group": "1_folder@1"
+        },
+        {
+          "command": "hamster.folder.deleteFolder",
+          "when": "webviewSection == 'hamsterFolder'",
+          "group": "1_folder@2"
         }
       ],
       "commandPalette": [
@@ -373,6 +409,22 @@
         },
         {
           "command": "hamster.row.fork",
+          "when": "false"
+        },
+        {
+          "command": "hamster.row.moveToFolder",
+          "when": "false"
+        },
+        {
+          "command": "hamster.row.clearFolder",
+          "when": "false"
+        },
+        {
+          "command": "hamster.folder.renameFolder",
+          "when": "false"
+        },
+        {
+          "command": "hamster.folder.deleteFolder",
           "when": "false"
         }
       ]

@@ -15,7 +15,7 @@ import sys
 import time
 
 SKIP_FILES = {"wheel-snapshot.json", "heal-deferred.json", "pr-cache.json",
-              "pins.json", "worktrees.json"}
+              "pins.json", "worktrees.json", "folders.json"}
 
 
 def tmux_cmd():
@@ -419,6 +419,12 @@ def main():
     except Exception:
         pins = {}
     try:
+        _fol = json.load(open(os.path.join(hdir, "folders.json")))
+    except Exception:
+        _fol = {}
+    folder_names = _fol.get("names", {})
+    folder_sids = _fol.get("sids", {})
+    try:
         primaries = json.load(open(os.path.join(hdir, "worktrees.json")))
     except Exception:
         primaries = {}
@@ -496,6 +502,7 @@ def main():
                     "tickets": tickets_of(br, prs),
                     "artifacts": artifacts_of(hdir, sid),
                     "pin": sid in pins,
+                    "folder": folder_sids.get(sid, ""),
                     "pinned": bool(d.get("pinned_name")),
                     "last_text": last_text, "last_mtime": mtime,
                     "waiting_s": waiting, "snooze_left_s": snooze_left})
@@ -504,6 +511,7 @@ def main():
     print(json.dumps({
         "ok": True, "session": ts, "active": active_tgt,
         "hidesnooze": hidesnooze,
+        "folders": folder_names,
         "counts": counts, "windows": windows,
         "generated_at": now.isoformat() + "Z",
     }))
