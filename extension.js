@@ -611,10 +611,26 @@ class WheelProvider {
           qp.show();
         });
         const safe = picked.filter(p => !p.pid);
-        if (picked.length > safe.length) {
-          vscode.window.showWarningMessage(
-            'Hamster: skipped ' + (picked.length - safe.length) + ' live session(s) — '
-            + 'kill the holder (⚡ row button) first; adopting a running session produces a blank window.');
+        const live = picked.filter(p => p.pid);
+        if (live.length) {
+          const yes = await vscode.window.showWarningMessage(
+            live.length + ' selected session(s) are running elsewhere (a terminal tab, an orphaned '
+            + 'process). Kill their processes and pull them onto the board? The conversations '
+            + 'resume intact — adopting while they run would just produce blank windows.',
+            { modal: true }, 'Kill & adopt');
+          if (yes) {
+            for (const p of live) {
+              try { process.kill(p.pid, 'SIGTERM'); } catch (e) { /* already gone */ }
+              let dead = false;
+              for (let i = 0; i < 20; i++) {           // up to ~5s for a clean exit
+                await new Promise(r => setTimeout(r, 250));
+                try { process.kill(p.pid, 0); } catch (e) { dead = true; break; }
+              }
+              if (dead) safe.push(p);
+              else vscode.window.showWarningMessage(
+                'Hamster: pid ' + p.pid + ' survived SIGTERM — skipped; kill it manually if you are sure.');
+            }
+          }
         }
         for (const p of safe) {
           const [sid, cwd] = p.out.split('\t');
