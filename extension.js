@@ -827,7 +827,7 @@ function html() {
   <button data-h="newFolder" title="Create a folder — drag rows onto it (or onto each other) to group sessions">⊞ folder</button>
 </div>
 <input id="filt" placeholder="filter — name, ticket, branch, session id (esc clears)" title="Type to filter the list — matches name, ticket, branch and session id (full or short); Esc clears"></div>
-<div id="list"></div>
+<div id="list" data-vscode-context='{"webviewSection":"hamsterBoard","preventDefaultContextMenuItems":true}'></div>
 <div id="err" hidden></div>
 <div id="notes">
   <div id="notesDrag" title="drag to resize"></div>
@@ -1280,6 +1280,10 @@ function activate(context) {
   for (const act of ['renameFolder', 'deleteFolder']) {
     context.subscriptions.push(
       vscode.commands.registerCommand('hamster.folder.' + act, rowCmd(act)));
+  }
+  for (const [id, act] of [['newFolder', 'newFolder'], ['newSession', 'new'], ['adoptSessions', 'adopt']]) {
+    context.subscriptions.push(
+      vscode.commands.registerCommand('hamster.board.' + id, () => provider.onMessage({ cmd: act })));
   }
   for (const act of ['pin', 'snooze', 'unsnooze', 'rename', 'ainame',
                      'addartifact', 'setprimary', 'fork', 'moveToFolder', 'clearFolder',

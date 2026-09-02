@@ -2,7 +2,7 @@
   "name": "claude-hamster",
   "displayName": "Hamster",
   "description": "Rich sidebar for hamster tmux Claude sessions \u2014 state board, jump, snooze, notes, PR decoration; you direct attention, it never does.",
-  "version": "0.1.27",
+  "version": "0.1.28",
   "publisher": "davidtedmanjones",
   "private": true,
   "engines": {
@@ -156,6 +156,18 @@
       {
         "command": "hamster.folder.deleteFolder",
         "title": "Delete Folder\u2026"
+      },
+      {
+        "command": "hamster.board.newFolder",
+        "title": "New Folder\u2026"
+      },
+      {
+        "command": "hamster.board.newSession",
+        "title": "New Session\u2026"
+      },
+      {
+        "command": "hamster.board.adoptSessions",
+        "title": "Adopt Sessions\u2026"
       }
     ],
     "keybindings": [
@@ -364,6 +376,21 @@
           "command": "hamster.folder.deleteFolder",
           "when": "webviewSection == 'hamsterFolder'",
           "group": "1_folder@2"
+        },
+        {
+          "command": "hamster.board.newFolder",
+          "when": "webviewSection == 'hamsterBoard'",
+          "group": "1_board@1"
+        },
+        {
+          "command": "hamster.board.newSession",
+          "when": "webviewSection == 'hamsterBoard'",
+          "group": "1_board@2"
+        },
+        {
+          "command": "hamster.board.adoptSessions",
+          "when": "webviewSection == 'hamsterBoard'",
+          "group": "1_board@3"
         }
       ],
       "commandPalette": [
@@ -425,6 +452,18 @@
         },
         {
           "command": "hamster.folder.deleteFolder",
+          "when": "false"
+        },
+        {
+          "command": "hamster.board.newFolder",
+          "when": "false"
+        },
+        {
+          "command": "hamster.board.newSession",
+          "when": "false"
+        },
+        {
+          "command": "hamster.board.adoptSessions",
           "when": "false"
         }
       ]
