@@ -768,7 +768,7 @@ function html() {
   <button data-h="lensRecent" id="lensRecent" class="chip">🕐 recent</button>
   <button data-h="toggleDetails" id="detChip" class="chip" title="Detailed rows: every row shows its Worktrees / PRs / Tickets / Artifacts lines (off = click a row's ▾ to expand it)">≣ details</button>
 </div>
-<input id="filt" placeholder="filter — name, ticket, branch (esc clears)" title="Type to filter the list; Esc clears"></div>
+<input id="filt" placeholder="filter — name, ticket, branch, session id (esc clears)" title="Type to filter the list — matches name, ticket, branch and session id (full or short); Esc clears"></div>
 <div id="list"></div>
 <div id="err" hidden></div>
 <div id="notes">
@@ -1046,8 +1046,8 @@ function html() {
     let rows = (st.windows || []).filter(w => !(st.hidesnooze && w.state === 'snoozed' && !w.active));
     if (filt) {
       rows = rows.filter(w =>
-        (w.name + ' ' + (w.tickets || []).join(' ') + ' ' + (w.branch || '') + ' ' + (w.base || ''))
-          .toLowerCase().includes(filt));
+        (w.name + ' ' + (w.tickets || []).join(' ') + ' ' + (w.branch || '') + ' ' + (w.base || '')
+          + ' ' + (w.sid || '')).toLowerCase().includes(filt));
     }
     const alpha = (a, b) => (a.name || '').toLowerCase().localeCompare((b.name || '').toLowerCase());
     const byRecent = (a, b) => (b.last_mtime || 0) - (a.last_mtime || 0);
