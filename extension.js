@@ -674,6 +674,7 @@ function html() {
   .subr { flex: none; opacity: .8; }
   .det { flex-basis: 100%; padding: 0 8px 3px 20px; font-size: 10px; opacity: .85; display: none; }
   .row.showdet .det { display: block; }
+  .row.showdet .sub { display: none; }
   .detline { display: flex; flex-wrap: wrap; gap: 2px 4px; align-items: center; margin-top: 2px; }
   .detlab { opacity: .5; min-width: 56px; flex: none; }
   .wtpin.cur { border-color: var(--vscode-focusBorder, #007fd4); color: var(--vscode-textLink-foreground); opacity: 1; }
@@ -877,7 +878,7 @@ function html() {
       + (cur ? '\\nactive worktree for this session'
              : '\\nclick: make this the primary worktree — the agent working elsewhere later re-takes it')
       + '">📁 ' + esc((x.path.split('/').pop() || x.branch || '').slice(0, 34)) + '</span>';
-    const wtAll = (wts.length || prim.source !== 'cwd')
+    const wtAll = prim.path
       ? [wtChip({ path: prim.path, branch: prim.branch }, true)].concat(wts.map(x => wtChip(x, false))).join('')
       : '';
     const detHtml =
@@ -889,7 +890,9 @@ function html() {
           const nameA = a.label || (a.path ? a.path.split('/').pop() : '') || (a.url ? a.url.split('/').pop().slice(0, 8) : 'artifact');
           return '<span class="c artchip" data-u="' + esc(a.url || '') + '" data-p="' + esc(a.path || '')
             + '" title="' + esc([a.url, a.path].filter(Boolean).join('\\n')) + '">🔗 ' + esc(nameA.slice(0, 34)) + '</span>';
-        }).join(''));
+        }).join(''))
+      + detline('Process:', '<span>' + esc(procTxt) + '</span>'
+        + (detailedMode ? '' : ' <span class="c xpand" title="Collapse">▴ collapse</span>'));
     const hasDet = !!detHtml;
     const xp = detailedMode || expandedRows.has(w.target);
     const expander = (!detailedMode && hasDet)
