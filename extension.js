@@ -657,6 +657,7 @@ function html() {
     border: 1px solid var(--vscode-input-border, transparent); border-radius: 3px; outline: none; }
   #filt:focus { border-color: var(--vscode-focusBorder); }
   .row { display: flex; flex-wrap: wrap; align-items: center; gap: 0 6px; padding: 3px 8px; cursor: pointer; white-space: nowrap; position: relative; overflow: hidden; }
+  .row:nth-child(even) { background: color-mix(in srgb, var(--vscode-foreground) 4%, transparent); }
   .row:hover { background: var(--vscode-list-hoverBackground); }
   .row.active { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); }
   .row.snoozed { opacity: .5; }
