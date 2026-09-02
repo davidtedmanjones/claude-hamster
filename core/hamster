@@ -834,9 +834,26 @@ PY
       "") echo "no transcript for $sid on this machine — resume would open a blank fresh session"; exit 1;;
       *) sid="$resolved";;
     esac
+    # already on the board? point there instead of duplicating
+    onboard=$(SID="$sid" python3 - "$HDIR" <<'PY'
+import glob,json,os,sys
+sid=os.environ["SID"]
+for f in glob.glob(os.path.join(sys.argv[1],"*.json")):
+    try: d=json.load(open(f))
+    except Exception: continue
+    if d.get("session_id")==sid and d.get("target"): print(d["target"]); break
+PY
+)
+    if [ -n "$onboard" ]; then
+      echo "session $sid is already on the board at $onboard — jump to it instead"
+      exit 1
+    fi
     # a conversation can't run in two processes: adopting while it runs
-    # elsewhere yields a blank window — the sidebar's Kill & adopt handles it
-    if ps -axo args= 2>/dev/null | grep -q "claude.*--resume $sid"; then
+    # elsewhere yields a blank window (and two writers on one transcript).
+    # awk, not `grep -q`: pipefail turns grep -q's early exit into a pipeline
+    # failure exactly when it matches, silently inverting the guard.
+    if ps -axo args= 2>/dev/null | awk -v s="--resume $sid" \
+        '($1=="claude" || $1 ~ /\/claude$/) && index($0,s){f=1} END{exit f?0:1}'; then
       echo "session $sid is running elsewhere — kill that process first (sidebar adopt picker: Kill & adopt)"
       exit 1
     fi

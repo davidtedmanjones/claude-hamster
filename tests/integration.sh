@@ -66,6 +66,8 @@ check "artifact recorded" "len([w for w in d['windows'] if w['target']=='$T'][0]
 HAMSTER_TARGET="$T" "$H" primary /tmp >/dev/null
 check "manual primary" "[w for w in d['windows'] if w['target']=='$T'][0]['primary']['source']=='manual'"
 
+"$H" adopt "$SID" >/dev/null 2>&1 && { say "FAIL: duplicate adopt allowed"; fails=$((fails+1)); } || say "ok: duplicate adopt refused (already on board)"
+
 HAMSTER_TARGET="$T" "$H" fork "forked-t1" >/dev/null
 check "fork creates a named window, original intact" "any(w['name']=='forked-t1' for w in d['windows']) and any(w['target']=='$T' for w in d['windows'])"
 FT=$("$H" json | python3 -c "import json,sys; print([w['target'] for w in json.load(sys.stdin)['windows'] if w['name']=='forked-t1'][0])")

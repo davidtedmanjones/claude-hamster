@@ -602,7 +602,7 @@ class WheelProvider {
         qp.placeholder = 'Adopt sessions (⚡ = held by a live process — kill it first via the row button)';
         qp.items = rows.map(mk).concat([{ label: '$(edit) Adopt by session id…',
           description: 'any uuid or unique prefix — searched across all projects, registry not required',
-          out: '__bysid__' }]);
+          out: '__bysid__', alwaysShow: true }]);
         qp.onDidTriggerItemButton(async (ev) => {
           const pid = ev.item.pid;
           if (!pid) return;
@@ -619,13 +619,20 @@ class WheelProvider {
             : x);
         });
         const picked = await new Promise((res) => {
-          qp.onDidAccept(() => { res(qp.selectedItems.slice()); qp.hide(); });
+          qp.onDidAccept(() => {
+            let sel = qp.selectedItems.slice();
+            // typed a session id straight into the filter? treat it as by-id
+            if (!sel.length && /^[0-9a-f][0-9a-f-]{5,}$/i.test(qp.value.trim())) {
+              sel = [{ out: '__bysid__', typed: qp.value.trim() }];
+            }
+            res(sel); qp.hide();
+          });
           qp.onDidHide(() => { res([]); qp.dispose(); });
           qp.show();
         });
         const bySid = picked.find(p => p.out === '__bysid__');
         if (bySid) {
-          const sid = await vscode.window.showInputBox({
+          const sid = bySid.typed || await vscode.window.showInputBox({
             prompt: 'Session id (full uuid or unique prefix, ≥6 chars)', ignoreFocusOut: true,
           });
           if (sid) {
@@ -935,7 +942,8 @@ function html() {
         }).join(''))
       + detline('Process:', '<span>' + esc([procTxt,
           w.turns ? w.turns + ' turns' : '',
-          w.tsize ? (w.tsize >= 1048576 ? (w.tsize / 1048576).toFixed(1) + 'MB' : Math.round(w.tsize / 1024) + 'KB') + ' history' : ''
+          w.tsize ? (w.tsize >= 1048576 ? (w.tsize / 1048576).toFixed(1) + 'MB' : Math.round(w.tsize / 1024) + 'KB') + ' history' : '',
+          w.sid ? w.sid.slice(0, 8) : ''
         ].filter(Boolean).join(' · ')) + '</span>'
         + (detailedMode ? '' : ' <span class="c xpand" title="Collapse">▴ collapse</span>'));
     const hasDet = !!detHtml;
