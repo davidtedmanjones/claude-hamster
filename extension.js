@@ -589,7 +589,9 @@ class WheelProvider {
         const qp = vscode.window.createQuickPick();
         qp.canSelectMany = true;
         qp.placeholder = 'Adopt sessions (⚡ = held by a live process — kill it first via the row button)';
-        qp.items = rows.map(mk);
+        qp.items = rows.map(mk).concat([{ label: '$(edit) Adopt by session id…',
+          description: 'any uuid or unique prefix — searched across all projects, registry not required',
+          out: '__bysid__' }]);
         qp.onDidTriggerItemButton(async (ev) => {
           const pid = ev.item.pid;
           if (!pid) return;
@@ -610,8 +612,20 @@ class WheelProvider {
           qp.onDidHide(() => { res([]); qp.dispose(); });
           qp.show();
         });
-        const safe = picked.filter(p => !p.pid);
-        const live = picked.filter(p => p.pid);
+        const bySid = picked.find(p => p.out === '__bysid__');
+        if (bySid) {
+          const sid = await vscode.window.showInputBox({
+            prompt: 'Session id (full uuid or unique prefix, ≥6 chars)', ignoreFocusOut: true,
+          });
+          if (sid) {
+            const ar = await hamster(['adopt', sid.trim()]);
+            const msg = (ar.stdout || ar.stderr || '').trim().split('\n').pop();
+            if (msg) (ar.err ? vscode.window.showWarningMessage : vscode.window.showInformationMessage)('Hamster: ' + msg);
+          }
+        }
+        const real = picked.filter(p => p.out !== '__bysid__');
+        const safe = real.filter(p => !p.pid);
+        const live = real.filter(p => p.pid);
         if (live.length) {
           const yes = await vscode.window.showWarningMessage(
             live.length + ' selected session(s) are running elsewhere (a terminal tab, an orphaned '

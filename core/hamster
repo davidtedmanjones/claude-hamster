@@ -787,13 +787,35 @@ PY
     snapshot_wheel
     echo "launched $win  (cwd=$dir)"
     ;;
-  adopt)  # resume ONE registered session into a new wheel window + enqueue
+  adopt)  # resume ONE session into a new board window + enqueue. Accepts a
+    # full session uuid OR a unique prefix (>=6 chars) — resolved against the
+    # WHOLE transcript store, registry presence not required.
     sid="${2:-}"; cwd="${3:-}"
-    [ -z "$sid" ] && { echo "usage: hamster adopt <session_id> [dir]"; exit 1; }
-    if [ -z "$cwd" ]; then  # cwd lookup: resurrect catalog first, legacy registry second
-      cwd=$(SID="$sid" python3 - "$HOME/.claude/active-sessions.jsonl" "$HOME/.claude/resurrect-snapshot.json" <<'PY'
-import json,os,sys
-sid=os.environ["SID"]; reg,snap=sys.argv[1],sys.argv[2]; cwd=""
+    [ -z "$sid" ] && { echo "usage: hamster adopt <session_id|prefix> [dir]"; exit 1; }
+    resolved=$(SID="$sid" python3 - "$PROJ" <<'PY'
+import glob,os,sys
+sid=os.environ["SID"]; proj=sys.argv[1]
+hits=sorted(set(os.path.basename(p)[:-6]
+                for p in glob.glob(os.path.join(proj,"*",sid+"*.jsonl"))))
+if len(hits)==1: print(hits[0])
+elif len(hits)>1: print("AMBIG:"+" ".join(h[:12] for h in hits[:8]))
+PY
+)
+    case "$resolved" in
+      AMBIG:*) echo "ambiguous prefix — matches: ${resolved#AMBIG:}"; exit 1;;
+      "") echo "no transcript for $sid on this machine — resume would open a blank fresh session"; exit 1;;
+      *) sid="$resolved";;
+    esac
+    # a conversation can't run in two processes: adopting while it runs
+    # elsewhere yields a blank window — the sidebar's Kill & adopt handles it
+    if ps -axo args= 2>/dev/null | grep -q "claude.*--resume $sid"; then
+      echo "session $sid is running elsewhere — kill that process first (sidebar adopt picker: Kill & adopt)"
+      exit 1
+    fi
+    if [ -z "$cwd" ]; then  # cwd: resurrect catalog > legacy registry > the transcript itself
+      cwd=$(SID="$sid" python3 - "$HOME/.claude/active-sessions.jsonl" "$HOME/.claude/resurrect-snapshot.json" "$PROJ" <<'PY'
+import glob,json,os,re,sys
+sid=os.environ["SID"]; reg,snap,proj=sys.argv[1],sys.argv[2],sys.argv[3]; cwd=""
 try:
     e=json.load(open(snap)).get("sessions",{}).get(sid)
     if isinstance(e,dict) and e.get("cwd"): cwd=e["cwd"]
@@ -801,18 +823,25 @@ except Exception: pass
 if not cwd and os.path.exists(reg):
     for line in open(reg):
         try: d=json.loads(line)
-        except: continue
+        except Exception: continue
         if d.get("session_id")==sid and d.get("cwd"): cwd=d["cwd"]
+if not cwd:   # transcript entries carry the session cwd
+    g=glob.glob(os.path.join(proj,"*",sid+".jsonl"))
+    if g:
+        data=open(g[0],"rb").read()[-65536:].decode("utf-8","ignore")
+        m=re.findall(r'"cwd":\s*"((?:[^"\\]|\\.)*)"',data)
+        if m: cwd=m[-1]
 print(cwd)
 PY
 )
     fi
-    [ -z "$cwd" ] && { echo "no cwd for $sid in registry — pass it explicitly"; exit 1; }
-    tp=$(ls "$HOME/.claude/projects/"*/"$sid".jsonl 2>/dev/null | head -1)
+    [ -z "$cwd" ] && { echo "could not determine a cwd for $sid — pass it explicitly"; exit 1; }
+    tp=$(ls "$PROJ/"*/"$sid".jsonl 2>/dev/null | head -1)
     [ -z "$tp" ] && { echo "no transcript for $sid on this machine — resume would open a blank fresh session"; exit 1; }
     tmux has-session -t "$TS" 2>/dev/null || tmux new-session -d -s "$TS" -c "$cwd"
     win=$(tmux new-window -t "$TS" -c "$cwd" -P -F '#{session_name}:#{window_index}' "$CLAUDE_CMD --resume $sid")
-    lbl=$(title_for "$sid" "$cwd"); [ -n "$lbl" ] && tmux rename-window -t "$win" "$lbl"
+    out=$(title_for "$sid" "$cwd"); lbl="${out%%$'\t'*}"
+    [ -n "$lbl" ] && tmux rename-window -t "$win" "$lbl"
     set_sid_opt "$win" "$sid"
     HW_T="$win" HW_SID="$sid" HW_CWD="$cwd" python3 - "$(kf "$win")" <<'PY'
 import json,os,sys,datetime
@@ -983,7 +1012,8 @@ Hamster — track tmux-hosted Claude sessions; you direct attention, it keeps th
   hamster start              create/attach the hamster tmux session (auto-heals after a reboot)
   hamster heal               rebuild session windows lost to a tmux-server death, names included
   hamster new <dir> [title]  launch a Claude in a new window (cwd=<dir>); title = pinned
-  hamster adopt <sid> [dir]  resume one registered session into a window
+  hamster adopt <sid|prefix> [dir]  resume any session by uuid (or unique prefix) —
+                             searches the whole transcript store; registry not required
   hamster prev               back to the session you were just on
   hamster close              end current session (kill window + clean state)
   hamster snooze <inc>       hide current from the board: 1m 5m 10m 15m 30m 1h 2h 4h 8h 1d 1w · forever
