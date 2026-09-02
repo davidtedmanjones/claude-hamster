@@ -2,7 +2,7 @@
   "name": "claude-hamster",
   "displayName": "Hamster",
   "description": "Rich sidebar for hamster tmux Claude sessions \u2014 state board, jump, snooze, notes, PR decoration; you direct attention, it never does.",
-  "version": "0.1.23",
+  "version": "0.1.24",
   "publisher": "davidtedmanjones",
   "private": true,
   "engines": {
@@ -136,6 +136,10 @@
       {
         "command": "hamster.diagnose",
         "title": "Hamster: Diagnostics"
+      },
+      {
+        "command": "hamster.row.fork",
+        "title": "Fork Session\u2026"
       }
     ],
     "keybindings": [
@@ -306,6 +310,11 @@
           "group": "3_facts@2"
         },
         {
+          "command": "hamster.row.fork",
+          "when": "webviewSection == 'hamsterRow'",
+          "group": "3_facts@3"
+        },
+        {
           "command": "hamster.row.hibernate",
           "when": "webviewSection == 'hamsterRow' && !hamsterOff",
           "group": "4_danger@1"
@@ -360,6 +369,10 @@
         },
         {
           "command": "hamster.row.setprimary",
+          "when": "false"
+        },
+        {
+          "command": "hamster.row.fork",
           "when": "false"
         }
       ]

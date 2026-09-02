@@ -537,6 +537,34 @@ PY
       *) echo "usage: hamster artifact add <url|path> [label] | list | rm <i>"; exit 1;;
     esac
     ;;
+  fork)  # duplicate the current session's conversation into a NEW session
+    # (claude --resume <sid> --fork-session: same context, new session id) —
+    # the original window keeps running untouched
+    t=$(cur_target); [ -z "$t" ] && exit 0
+    meta=$(python3 - "$(kf "$t")" <<'PY'
+import json,sys
+try:
+    d=json.load(open(sys.argv[1]))
+    print((d.get("session_id") or "")+chr(9)+(d.get("cwd") or ""))
+except Exception: print("	")
+PY
+)
+    sid="${meta%%$'	'*}"; cwd="${meta#*$'	'}"
+    [ -z "$sid" ] && { echo "no session id for this window yet"; exit 1; }
+    [ -z "$cwd" ] && cwd="$PWD"
+    name="${*:2}"
+    tmux has-session -t "$TS" 2>/dev/null || tmux new-session -d -s "$TS" -c "$cwd"
+    win=$(tmux new-window -t "$TS" -c "$cwd" -P -F '#{session_name}:#{window_index}' "$CLAUDE_CMD --resume $sid --fork-session")
+    [ -n "$name" ] && tmux rename-window -t "$win" "$name"
+    HW_T="$win" HW_CWD="$cwd" HW_N="$name" python3 - "$(kf "$win")" <<'PY'
+import json,os,sys
+d={"target":os.environ["HW_T"],"state":"returned","cwd":os.environ["HW_CWD"]}
+if os.environ.get("HW_N"): d["pinned_name"]=os.environ["HW_N"]
+tmp=sys.argv[1]+".tmp"; json.dump(d,open(tmp,"w")); os.replace(tmp,sys.argv[1])
+PY
+    snapshot_wheel
+    echo "forked $sid -> $win${name:+  ($name)}"
+    ;;
   hibernate)  # stop the claude process but KEEP the window/state — frees the
     # memory of an idle session; ⟲ restart (or `hamster restart current`) wakes
     # it by resuming the same sid. remain-on-exit holds the dead pane so the
@@ -1025,6 +1053,8 @@ Hamster — track tmux-hosted Claude sessions; you direct attention, it keeps th
                              unset = auto-guess from the latest file the session touched)
   hamster artifact add <url|path> [label]  record a link/file artifact for the current session
   hamster artifact list|rm <i>  list / remove them (Artifact-tool publishes auto-captured by hook)
+  hamster fork [name]        duplicate the current session's conversation into a NEW
+                             session (--fork-session); the original stays untouched
   hamster hibernate          stop the current session's claude but keep the window — frees
                              memory; restart wakes it (resumes the same sid)
   hamster restart [current|all|force]  respawn claude processes in place, resuming each sid —

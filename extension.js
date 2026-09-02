@@ -480,6 +480,17 @@ class WheelProvider {
         if (v) await hamster(['rename', v], T);
         break;
       }
+      case 'fork': {
+        const nm = await vscode.window.showInputBox({
+          prompt: 'Name for the forked session (same context, new session id — the original is untouched)',
+          value: (m.name || 'session') + ' fork', ignoreFocusOut: true,
+        });
+        if (nm === undefined) break;
+        const r = await hamster(nm ? ['fork', nm] : ['fork'], T);
+        const msg = (r.stdout || r.stderr || '').trim().split('\n').pop();
+        if (msg) vscode.window.setStatusBarMessage('Hamster: ' + msg, 5000);
+        break;
+      }
       case 'hibernate': {
         if (m.working) {
           const yes = await vscode.window.showWarningMessage(
@@ -1124,7 +1135,7 @@ function activate(context) {
     provider.onMessage({ cmd: act, target: ctx && ctx.target, name: ctx && ctx.name,
                          working: !!(ctx && ctx.hamsterWorking) });
   for (const act of ['pin', 'snooze', 'unsnooze', 'rename', 'ainame',
-                     'addartifact', 'setprimary', 'hibernate', 'restart', 'close']) {
+                     'addartifact', 'setprimary', 'fork', 'hibernate', 'restart', 'close']) {
     context.subscriptions.push(
       vscode.commands.registerCommand('hamster.row.' + act, rowCmd(act)));
   }
