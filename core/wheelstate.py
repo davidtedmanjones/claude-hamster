@@ -486,7 +486,7 @@ def main():
             hb = p_.get("branch") or ""
             if hb and hb in wt:
                 p_["worktree"] = wt[hb]
-        row.update({"state": st, "unseen": unseen,
+        row.update({"state": st, "unseen": unseen, "root": root,
                     "subagents": sub, "sid": sid, "cwd": cwd,
                     "base": os.path.basename(cwd.rstrip("/")) if cwd else "",
                     "branch": br, "prs": prs,

@@ -241,6 +241,18 @@ async function cmdPrev() {
   await tmux(['last-window', '-t', (st && st.session) || 'hamster']);
   wheelTerminal(true);
 }
+function folderFor(row) {
+  // auto-add the REPO ROOT, never a raw subdir cwd; a manual primary is the
+  // user's explicit choice and is honoured as-is. Non-repo dirs are skipped —
+  // a session cwd'd in an umbrella dir (~/leap holding 160 checkouts) would
+  // otherwise drown the file indexer and hollow out cmd+P.
+  if (!row) return null;
+  const prim = row.primary || {};
+  if (prim.source === 'manual') return prim.path || null;
+  if (prim.source === 'active') return prim.path || null;   // worktree root by construction
+  return row.root || null;
+}
+
 function ensureFolders(paths) {
   const cur = vscode.workspace.workspaceFolders || [];
   const have = new Set(cur.map(f => f.uri.fsPath));
@@ -331,8 +343,7 @@ class WheelProvider {
     try { this.view.webview.postMessage({ type: 'state', state }); } catch (e) { /* view gone */ }
     await this.updateNotes(state);
     if (state.ok && cfg().get('workspaceFolders') === 'all') {
-      ensureFolders((state.windows || []).map(w =>
-        (w.primary && w.primary.path) || w.cwd));
+      ensureFolders((state.windows || []).map(folderFor));
     }
     const c = state.counts || {};
     const n = (c.attention || 0) + (c.ready || 0);
@@ -446,7 +457,7 @@ class WheelProvider {
         if (mode === 'focused' || mode === 'all') {
           const row = this.state && this.state.ok
             && (this.state.windows || []).find(x => x.target === t);
-          const p = (row && row.primary && row.primary.path) || (row && row.cwd);
+          const p = folderFor(row);
           if (p) {
             ensureFolders([p]);
             if (cfg().get('revealFolderOnFocus')) {
@@ -1117,7 +1128,7 @@ function activate(context) {
     vscode.commands.registerCommand('hamster.addAllFolders', async () => {
       const st = await getState();
       if (!st || !st.ok) { vscode.window.showWarningMessage('Hamster: board offline'); return; }
-      ensureFolders((st.windows || []).map(w => (w.primary && w.primary.path) || w.cwd));
+      ensureFolders((st.windows || []).map(folderFor));
     }),
     vscode.commands.registerCommand('hamster.openSettings', () =>
       vscode.commands.executeCommand('workbench.action.openSettings',
